@@ -3,8 +3,8 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci --frozen-lockfile
+COPY . .
+RUN npm run build
 
 # ─── Runtime Stage ────────────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
@@ -19,6 +19,7 @@ RUN addgroup -S keychaos && adduser -S keychaos -G keychaos
 
 # Copy deps and app source
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
 COPY server/ ./server/
 COPY public/ ./public/
 COPY package.json ./

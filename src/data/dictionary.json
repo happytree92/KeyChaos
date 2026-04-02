@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "adjectives": [
+    "secure", "reliable", "dynamic", "precise", "active", "robust", "logical", "stable", "prime", "swift",
+    "global", "matrix", "vertex", "vector", "binary", "atomic", "vortex", "cipher", "neural", "proxy",
+    "static", "linear", "scalar", "hybrid", "remote", "direct", "linked", "mapped", "cached", "synced"
+  ],
+  "nouns": [
+    "gateway", "protocol", "server", "circuit", "access", "keystone", "endpoint", "network", "system", "module",
+    "process", "service", "channel", "socket", "bridge", "tunnel", "buffer", "packet", "frame", "token",
+    "signal", "stream", "uplink", "beacon", "sensor", "portal", "client", "daemon", "kernel", "driver"
+  ],
+  "verbs": [
+    "connects", "routes", "validates", "encrypts", "monitors", "resolves", "updates", "streams", "parses", "links",
+    "syncs", "scales", "tracks", "pumps", "flows", "signs", "maps", "locks", "guards", "peers"
+  ],
+  "blocklist": [
+    "vulgar", "offensive", "test", "demo", "admin", "password", "root"
+  ]
+}
