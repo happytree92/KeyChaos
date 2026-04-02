@@ -1,42 +1,33 @@
-# ─── Stage 1: Build ────────────────────────────────────────────────────────────
+# ─── Build Stage ─────────────────────────────────────────────────────────────
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies first (layer caching)
 COPY package*.json ./
 RUN npm ci --frozen-lockfile
 
-# Copy source and build
-COPY . .
-RUN npm run build
-
-# ─── Stage 2: Runtime ──────────────────────────────────────────────────────────
+# ─── Runtime Stage ────────────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV PORT=3000
 
-# Security: run as non-root user
+# Security: non-root user
 RUN addgroup -S keychaos && adduser -S keychaos -G keychaos
 
-# Copy built output and server files
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/server ./server
-COPY --from=builder /app/package*.json ./
+# Copy deps and app source
+COPY --from=builder /app/node_modules ./node_modules
+COPY server/ ./server/
+COPY public/ ./public/
+COPY package.json ./
 
-# Install production deps only
-RUN npm ci --frozen-lockfile --omit=dev && \
-    npm cache clean --force
-
-# Change ownership to non-root user
 RUN chown -R keychaos:keychaos /app
 USER keychaos
 
 EXPOSE 3000
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD wget -qO- http://localhost:3000/api/health || exit 1
 
