@@ -27,6 +27,11 @@ if (!process.env.PWD_PUSH_TOKEN) {
   console.warn('⚠️  PWD_PUSH_TOKEN is not set — PwdPush may rate-limit unauthenticated requests.');
 }
 
+// ─── Reverse Proxy Trust ─────────────────────────────────────────────────────
+// Required when running behind Pangolin / nginx — lets Express read the real
+// client IP from X-Forwarded-For so rate limiting works correctly.
+app.set('trust proxy', 1);
+
 // ─── Security: Helmet (CSP, HSTS, X-Frame-Options, noSniff, etc.) ────────────
 app.use(helmet({
   contentSecurityPolicy: {

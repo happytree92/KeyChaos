@@ -46,35 +46,34 @@ function createPwdPushRouter() {
 
       const expireDays = DURATION_TO_DAYS[ttl] ?? 1;
 
+      const pwdBody = {
+        password: {
+          payload,
+          expire_after_days:   expireDays,
+          expire_after_views:  maxViews,
+          deletable_by_viewer: deletable,
+        },
+      };
+
       if (API_VERSION === 'v2') {
-        // pwpush.com authenticated API — POST /api/v1/passwords.json + Bearer token
-        endpoint = `${BASE_URL}/api/v1/passwords.json`;
-        body = JSON.stringify({
-          password: {
-            payload,
-            expire_after_days:   expireDays,
-            expire_after_views:  maxViews,
-            deletable_by_viewer: deletable,
-          },
-        });
+        // pwpush.com authenticated REST API
+        endpoint = `${BASE_URL}/api/v1/passwords`;
+        body = JSON.stringify(pwdBody);
       } else {
-        // v1 / legacy OSS self-hosted — unauthenticated /p.json
+        // v1 / legacy OSS self-hosted
         endpoint = `${BASE_URL}/p.json`;
-        body = JSON.stringify({
-          password: {
-            payload,
-            expire_after_days:   expireDays,
-            expire_after_views:  maxViews,
-            deletable_by_viewer: deletable,
-          },
-        });
+        body = JSON.stringify(pwdBody);
       }
 
       console.log(`PwdPush POST ${endpoint} (ttl=${ttl} views=${maxViews})`);
 
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...authHeaders,
+        },
         body,
       });
 
@@ -125,9 +124,12 @@ function createPwdPushRouter() {
 
       if (API_VERSION === 'v2') {
         // Probe the authenticated API with a GET — expect 200 or 401 (reachable), not 404
-        const response = await fetch(`${BASE_URL}/api/v1/passwords.json`, {
+        const response = await fetch(`${BASE_URL}/api/v1/passwords`, {
           method: 'GET',
-          headers: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
+          headers: {
+            'Accept': 'application/json',
+            ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
+          },
         });
         const ok = response.status === 200 || response.status === 401;
         return res.json({ ok, status: response.status, version: 'v2/authenticated' });
