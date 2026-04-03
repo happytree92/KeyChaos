@@ -15,7 +15,8 @@ const PORT    = process.env.PORT || 3000;
 const VERSION = '1.3.0';
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
-log('startup', { version: VERSION, port: PORT, node_env: process.env.NODE_ENV || 'development' });
+const TRUST_PROXY = process.env.TRUST_PROXY !== 'false';  // default true
+log('startup', { version: VERSION, port: PORT, node_env: process.env.NODE_ENV || 'development', trust_proxy: TRUST_PROXY });
 
 const staticDir  = path.join(__dirname, '..', 'dist');
 const fallbackDir = path.join(__dirname, '..', 'public');
@@ -35,7 +36,7 @@ if (!process.env.PWD_PUSH_TOKEN) {
 // ─── Reverse Proxy Trust ─────────────────────────────────────────────────────
 // Required when running behind Pangolin / nginx — lets Express read the real
 // client IP from X-Forwarded-For so rate limiting works correctly.
-app.set('trust proxy', 1);
+if (TRUST_PROXY) app.set('trust proxy', 1);
 
 // ─── Security: Helmet (CSP, HSTS, X-Frame-Options, noSniff, etc.) ────────────
 app.use(helmet({

@@ -11,6 +11,8 @@ services:
       PWD_PUSH_URL:     ${PWD_PUSH_URL:-https://pwpush.com}
       PWD_PUSH_VERSION: ${PWD_PUSH_VERSION:-v2}
       PWD_PUSH_TOKEN:   ${PWD_PUSH_TOKEN:-}
+      # ─── Reverse Proxy ───────────────────────────────────────────────────────
+      TRUST_PROXY: ${TRUST_PROXY:-true}
       # ─── Rate Limits ─────────────────────────────────────────────────────────
       RATE_LIMIT_PER_MIN:  ${RATE_LIMIT_PER_MIN:-20}
       RATE_LIMIT_PER_HOUR: ${RATE_LIMIT_PER_HOUR:-200}
