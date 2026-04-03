@@ -12,7 +12,6 @@ function createPwdPushRouter() {
 
   const BASE_URL    = (process.env.PWD_PUSH_URL     || 'https://pwpush.com').replace(/\/$/, '');
   const TOKEN       = process.env.PWD_PUSH_TOKEN     || '';
-  // PWD_PUSH_VERSION is the canonical var; fall back to legacy PWD_PUSH_API_VERSION
   const API_VERSION = process.env.PWD_PUSH_VERSION   ||
                       process.env.PWD_PUSH_API_VERSION || 'v2';
 
@@ -46,23 +45,28 @@ function createPwdPushRouter() {
 
       const expireDays = DURATION_TO_DAYS[ttl] ?? 1;
 
-      const pwdBody = {
-        password: {
-          payload,
-          expire_after_days:   expireDays,
-          expire_after_views:  maxViews,
-          deletable_by_viewer: deletable,
-        },
-      };
-
       if (API_VERSION === 'v2') {
-        // pwpush.com authenticated REST API
-        endpoint = `${BASE_URL}/api/v1/passwords`;
-        body = JSON.stringify(pwdBody);
+        // pwpush.com / Pro — REST API v2
+        endpoint = `${BASE_URL}/api/v2/pushes`;
+        body = JSON.stringify({
+          push: {
+            payload,
+            expire_after_duration: ttl,
+            expire_after_views:    maxViews,
+            deletable_by_viewer:   deletable,
+          },
+        });
       } else {
-        // v1 / legacy OSS self-hosted
+        // v1 / OSS self-hosted
         endpoint = `${BASE_URL}/p.json`;
-        body = JSON.stringify(pwdBody);
+        body = JSON.stringify({
+          password: {
+            payload,
+            expire_after_days:   DURATION_TO_DAYS[ttl] ?? 1,
+            expire_after_views:  maxViews,
+            deletable_by_viewer: deletable,
+          },
+        });
       }
 
       console.log(`PwdPush POST ${endpoint} (ttl=${ttl} views=${maxViews})`);
@@ -124,15 +128,12 @@ function createPwdPushRouter() {
 
       if (API_VERSION === 'v2') {
         // Probe the authenticated API with a GET — expect 200 or 401 (reachable), not 404
-        const response = await fetch(`${BASE_URL}/api/v1/passwords`, {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-            ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
-          },
+        const response = await fetch(`${BASE_URL}/api/v2/version`, {
+          headers: { 'Accept': 'application/json' },
         });
-        const ok = response.status === 200 || response.status === 401;
-        return res.json({ ok, status: response.status, version: 'v2/authenticated' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        return res.json({ ok: true, version: data.application_version, edition: data.edition });
       } else {
         const response = await fetch(`${BASE_URL}/p.json`, { method: 'GET' });
         return res.json({ ok: response.status === 200, version: 'v1/legacy', status: response.status });
