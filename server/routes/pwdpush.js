@@ -2,7 +2,8 @@
 
 const express = require('express');
 
-// expire_after_duration enum → days (for v1 fallback conversion)
+// TTL enum (sent from UI) → expire_after_days
+// 6=1day, 12=1week, 15=1month (kept as UI enum; converted here before sending upstream)
 const DURATION_TO_DAYS = { 6: 1, 12: 7, 15: 30 };
 const VALID_DURATIONS = new Set([6, 12, 15]);
 
@@ -43,25 +44,27 @@ function createPwdPushRouter() {
       const { default: fetch } = await import('node-fetch');
       let endpoint, body;
 
+      const expireDays = DURATION_TO_DAYS[ttl] ?? 1;
+
       if (API_VERSION === 'v2') {
-        endpoint = `${BASE_URL}/api/v2/pushes`;
+        // pwpush.com authenticated API — POST /api/v1/passwords.json + Bearer token
+        endpoint = `${BASE_URL}/api/v1/passwords.json`;
         body = JSON.stringify({
-          push: {
+          password: {
             payload,
-            expire_after_duration:  ttl,
-            expire_after_views:     maxViews,
-            deletable_by_viewer:    deletable,
-            name,
+            expire_after_days:   expireDays,
+            expire_after_views:  maxViews,
+            deletable_by_viewer: deletable,
           },
         });
       } else {
-        // v1 / OSS self-hosted — flat body, duration as days
+        // v1 / legacy OSS self-hosted — unauthenticated /p.json
         endpoint = `${BASE_URL}/p.json`;
         body = JSON.stringify({
           password: {
             payload,
-            expire_after_days:  DURATION_TO_DAYS[ttl] ?? 1,
-            expire_after_views: maxViews,
+            expire_after_days:   expireDays,
+            expire_after_views:  maxViews,
             deletable_by_viewer: deletable,
           },
         });
@@ -121,12 +124,13 @@ function createPwdPushRouter() {
       const { default: fetch } = await import('node-fetch');
 
       if (API_VERSION === 'v2') {
-        const response = await fetch(`${BASE_URL}/api/v2/version`, {
+        // Probe the authenticated API with a GET — expect 200 or 401 (reachable), not 404
+        const response = await fetch(`${BASE_URL}/api/v1/passwords.json`, {
+          method: 'GET',
           headers: TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        return res.json({ ok: true, version: data.application_version, edition: data.edition });
+        const ok = response.status === 200 || response.status === 401;
+        return res.json({ ok, status: response.status, version: 'v2/authenticated' });
       } else {
         const response = await fetch(`${BASE_URL}/p.json`, { method: 'GET' });
         return res.json({ ok: response.status === 200, version: 'v1/legacy', status: response.status });
