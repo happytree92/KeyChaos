@@ -42,7 +42,9 @@ function App() {
   }, [generate])
 
   const copyToClipboard = () => {
-    navigator.clipboard.writeText(password)
+    navigator.clipboard.writeText(password).catch(err => {
+      console.error('Clipboard write failed:', err)
+    })
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -61,14 +63,17 @@ function App() {
       if (!res.ok) throw new Error(data.error || 'Push failed')
       setPushUrl(data.pushUrl)
       setPushState('done')
-    } catch {
+    } catch (err) {
+      console.error('PwdPush share failed:', err)
       setPushState('error')
       setTimeout(() => setPushState('idle'), 4000)
     }
   }
 
   const copyPushUrl = () => {
-    navigator.clipboard.writeText(pushUrl)
+    navigator.clipboard.writeText(pushUrl).catch(err => {
+      console.error('Clipboard write failed:', err)
+    })
   }
 
   const { label, color } = EntropyCalculator.getStrengthLabel(entropy)
