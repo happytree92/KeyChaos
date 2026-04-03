@@ -13,11 +13,15 @@ const DEFAULT_FORMULA: FormulaConfig = {
   ]
 }
 
+type PushState = 'idle' | 'loading' | 'done' | 'error'
+
 function App() {
   const [password, setPassword] = useState('')
   const [entropy, setEntropy] = useState(0)
   const [copied, setCopied] = useState(false)
   const [health, setHealth] = useState<any>(null)
+  const [pushState, setPushState] = useState<PushState>('idle')
+  const [pushUrl, setPushUrl] = useState('')
 
   const generate = useCallback(() => {
     const pw = PasswordEngine.generate(DEFAULT_FORMULA)
@@ -25,6 +29,8 @@ function App() {
     setPassword(pw)
     setEntropy(ent)
     setCopied(false)
+    setPushState('idle')
+    setPushUrl('')
   }, [])
 
   useEffect(() => {
@@ -39,6 +45,30 @@ function App() {
     navigator.clipboard.writeText(password)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  const sharePwdPush = async () => {
+    if (!password || pushState === 'loading') return
+    setPushState('loading')
+    setPushUrl('')
+    try {
+      const res = await fetch('/api/pwdpush/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload: password, ttl: 3, maxViews: 5, deletable: true }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Push failed')
+      setPushUrl(data.pushUrl)
+      setPushState('done')
+    } catch {
+      setPushState('error')
+      setTimeout(() => setPushState('idle'), 4000)
+    }
+  }
+
+  const copyPushUrl = () => {
+    navigator.clipboard.writeText(pushUrl)
   }
 
   const { label, color } = EntropyCalculator.getStrengthLabel(entropy)
@@ -111,14 +141,50 @@ function App() {
             </div>
           </section>
 
-          <section className="pt-4">
-             <button className="w-full relative group">
-                <div className="absolute -inset-0.5 bg-gradient-to-r from-success/50 to-success/10 rounded-xl blur opacity-0 group-hover:opacity-20 transition duration-300"></div>
-                <div className="relative flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 text-success font-bold py-5 rounded-xl transition-all">
+          <section className="pt-4 space-y-3">
+            <button
+              onClick={sharePwdPush}
+              disabled={pushState === 'loading' || pushState === 'done'}
+              className="w-full relative group disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <div className="absolute -inset-0.5 bg-gradient-to-r from-success/50 to-success/10 rounded-xl blur opacity-0 group-hover:opacity-20 transition duration-300"></div>
+              <div className="relative flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 text-success font-bold py-5 rounded-xl transition-all">
+                {pushState === 'loading' ? (
+                  <RefreshCw className="w-5 h-5 animate-spin" />
+                ) : pushState === 'done' ? (
+                  <CheckCircle2 className="w-5 h-5" />
+                ) : (
                   <Share2 className="w-5 h-5" />
-                  Share via PwdPush
-                </div>
-             </button>
+                )}
+                {pushState === 'loading' ? 'Pushing…' : pushState === 'done' ? 'Pushed!' : pushState === 'error' ? 'Push Failed — Retry?' : 'Share via PwdPush'}
+              </div>
+            </button>
+
+            {pushState === 'done' && pushUrl && (
+              <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
+                <a
+                  href={pushUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 text-xs font-mono text-success truncate hover:underline"
+                >
+                  {pushUrl}
+                </a>
+                <button
+                  onClick={copyPushUrl}
+                  className="shrink-0 text-secondary hover:text-white transition-colors"
+                  title="Copy link"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {pushState === 'error' && (
+              <p className="text-center text-xs text-error font-medium">
+                Could not reach PwdPush. Check server config or try again.
+              </p>
+            )}
           </section>
         </main>
 

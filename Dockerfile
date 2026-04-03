@@ -3,9 +3,16 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Install all dependencies for the build
+COPY package*.json ./
+RUN npm ci --frozen-lockfile
+
+# Copy source and build
 COPY . .
 RUN npm run build
 
+# Remove devDependencies to keep the final production image lean
+RUN npm prune --omit=dev
 # ─── Runtime Stage ────────────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
