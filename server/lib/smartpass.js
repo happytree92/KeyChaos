@@ -8,21 +8,6 @@ const { createHmac } = require('crypto');
 const PEPPER        = process.env.SMARTPASS_PEPPER || '';
 const PEPPER_ACTIVE = PEPPER.length > 0;
 
-const BASE62 = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-
-/**
- * Append a 2-char HMAC-SHA256-derived suffix to `password`.
- * Suffix chars are drawn from BASE62 (a-z A-Z 0-9).
- * When no pepper is configured this is a no-op.
- */
-function applyPepper(password) {
-  if (!PEPPER) return password;
-  const hmac = createHmac('sha256', PEPPER).update(password).digest();
-  const c1   = BASE62[hmac[0] % 62];
-  const c2   = BASE62[hmac[1] % 62];
-  return password + c1 + c2;
-}
-
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SYMBOLS = ['#', '@', '!', '*', '+', '=', '-'];
@@ -71,9 +56,27 @@ function generateOne(options) {
     attempts++;
   } while (BLOCKED_PAIRS.has(adj + noun) && attempts < 10);
 
-  const symbol = symbolSet === 'safe' ? randomFrom(SYMBOLS) : '';
-  const digits = generateDigits(digitCount);
-  return applyPepper(adj + noun + symbol + digits);
+  let symbol, digits;
+
+  if (PEPPER) {
+    // Derive symbol + digits deterministically from HMAC(pepper, adj+noun).
+    // Password length is identical to the no-pepper case — no extra chars.
+    const hmac = createHmac('sha256', PEPPER).update(adj + noun).digest();
+    symbol = symbolSet === 'safe' ? SYMBOLS[hmac[0] % SYMBOLS.length] : '';
+    // Step through HMAC bytes to avoid blocked digit strings.
+    const fallback = { 2: '47', 3: '472', 4: '4721' };
+    let offset = 1;
+    do {
+      digits = Array.from({ length: digitCount }, (_, i) => (hmac[(offset + i) % 32] % 10).toString()).join('');
+      offset += digitCount;
+    } while (isBlockedNumber(digits) && offset + digitCount <= 32);
+    if (isBlockedNumber(digits)) digits = fallback[digitCount];
+  } else {
+    symbol = symbolSet === 'safe' ? randomFrom(SYMBOLS) : '';
+    digits = generateDigits(digitCount);
+  }
+
+  return adj + noun + symbol + digits;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -99,8 +102,7 @@ function calculateEntropy(options) {
   const nounBits   = Math.log2(180);
   const symbolBits = options.symbolSet === 'safe' ? Math.log2(SYMBOLS.length) : 0;
   const digitBits  = options.digitCount * Math.log2(10);
-  const pepperBits = PEPPER_ACTIVE ? 11.6 : 0;   // 62^2 = 3844 ≈ 2^11.6
-  return Math.round((adjBits + nounBits + symbolBits + digitBits + pepperBits) * 10) / 10;
+  return Math.round((adjBits + nounBits + symbolBits + digitBits) * 10) / 10;
 }
 
 module.exports = { generateSmartPass, calculateEntropy, PEPPER_ACTIVE };
