@@ -1,26 +1,31 @@
 'use strict';
 
 require('dotenv').config();
-const express = require('express');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const path = require('path');
-const fs = require('fs');
-const { createPwdPushRouter } = require('./routes/pwdpush');
+const express    = require('express');
+const helmet     = require('helmet');
+const rateLimit  = require('express-rate-limit');
+const path       = require('path');
+const fs         = require('fs');
+const { createPwdPushRouter }        = require('./routes/pwdpush');
+const { log, recordRateLimitHit, THRESHOLD_COUNT } = require('./logger');
+const { requestLogger }              = require('./middleware/logger');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const app     = express();
+const PORT    = process.env.PORT || 3000;
 const VERSION = '1.3.0';
 
-// ─── Startup Diagnostics ─────────────────────────────────────────────────────
+// ─── Startup ──────────────────────────────────────────────────────────────────
+log('startup', { version: VERSION, port: PORT, node_env: process.env.NODE_ENV || 'development' });
+
+const staticDir  = path.join(__dirname, '..', 'dist');
+const fallbackDir = path.join(__dirname, '..', 'public');
+const serveDir   = fs.existsSync(staticDir) ? staticDir : fallbackDir;
+const indexExists = fs.existsSync(path.join(serveDir, 'index.html'));
+
+// Keep human-readable startup lines alongside structured log
 console.log(`🔑 KeyChaos v${VERSION} starting…`);
 console.log(`   NODE_ENV : ${process.env.NODE_ENV || 'development'}`);
 console.log(`   PORT     : ${PORT}`);
-
-const staticDir = path.join(__dirname, '..', 'dist');
-const fallbackDir = path.join(__dirname, '..', 'public');
-const serveDir = fs.existsSync(staticDir) ? staticDir : fallbackDir;
-const indexExists = fs.existsSync(path.join(serveDir, 'index.html'));
 console.log(`   UI dir   : ${serveDir} (index.html ${indexExists ? '✅' : '❌ MISSING'})`);
 
 if (!process.env.PWD_PUSH_TOKEN) {
@@ -50,14 +55,12 @@ app.use(helmet({
 }));
 
 // ─── Security: Same-origin CORS ──────────────────────────────────────────────
-// No Access-Control-Allow-Origin header is set, so browsers enforce same-origin
-// by default. Additionally, reject API requests that explicitly carry a foreign Origin.
 app.use('/api/', (req, res, next) => {
   const origin = req.get('Origin');
   if (!origin) return next();
   try {
-    const originHost = new URL(origin).host;
-    const serverHost = (req.get('Host') || '').split(':')[0];
+    const originHost  = new URL(origin).host;
+    const serverHost  = (req.get('Host') || '').split(':')[0];
     const originHostName = originHost.split(':')[0];
     if (originHostName !== serverHost) {
       console.warn(`[CORS] Blocked cross-origin API request — Origin: ${origin}`);
@@ -77,9 +80,14 @@ const limiterMinute = rateLimit({
   windowMs: 60 * 1000,
   max: RATE_PER_MIN,
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders:   false,
   handler: (req, res) => {
-    console.warn(`[RATE LIMIT] Per-minute exceeded — IP: ${req.ip} at ${new Date().toISOString()}`);
+    const ip    = req.clientIp || req.ip;
+    const count = recordRateLimitHit(ip);
+    log('rate_limit_hit', { ip });
+    if (count >= THRESHOLD_COUNT) {
+      log('rate_limit_threshold', { ip, count });
+    }
     res.status(429).json({ error: 'Too many requests — slow down.' });
   },
 });
@@ -88,9 +96,14 @@ const limiterHour = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: RATE_PER_HOUR,
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders:   false,
   handler: (req, res) => {
-    console.warn(`[RATE LIMIT] Per-hour exceeded — IP: ${req.ip} at ${new Date().toISOString()}`);
+    const ip    = req.clientIp || req.ip;
+    const count = recordRateLimitHit(ip);
+    log('rate_limit_hit', { ip });
+    if (count >= THRESHOLD_COUNT) {
+      log('rate_limit_threshold', { ip, count });
+    }
     res.status(429).json({ error: 'Hourly request limit exceeded.' });
   },
 });
@@ -100,15 +113,7 @@ app.use('/api/', limiterHour);
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '10kb' }));
-
-// ─── Request Logging ─────────────────────────────────────────────────────────
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    console.log(`${res.statusCode} ${req.method} ${req.path} ${Date.now() - start}ms`);
-  });
-  next();
-});
+app.use(requestLogger);
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
 app.use('/api/pwdpush', createPwdPushRouter());

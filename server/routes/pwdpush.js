@@ -1,11 +1,12 @@
 'use strict';
 
 const express = require('express');
+const { log } = require('../logger');
 
 // TTL enum (sent from UI) → expire_after_days
 // 6=1day, 12=1week, 15=1month (kept as UI enum; converted here before sending upstream)
 const DURATION_TO_DAYS = { 6: 1, 12: 7, 15: 30 };
-const VALID_DURATIONS = new Set([6, 12, 15]);
+const VALID_DURATIONS  = new Set([6, 12, 15]);
 
 function createPwdPushRouter() {
   const router = express.Router();
@@ -19,12 +20,15 @@ function createPwdPushRouter() {
 
   // POST /api/pwdpush/push
   router.post('/push', async (req, res) => {
+    const ip = req.clientIp || req.ip;
     let { payload, ttl, maxViews, deletable = true, name = '' } = req.body;
 
     if (!payload || typeof payload !== 'string') {
+      log('invalid_params', { ip, reason: 'payload missing or not a string' });
       return res.status(400).json({ error: 'payload is required and must be a string.' });
     }
     if (payload.length > 10_000) {
+      log('invalid_params', { ip, reason: 'payload exceeds 10,000 characters' });
       return res.status(400).json({ error: 'payload exceeds maximum length of 10,000 characters.' });
     }
 
@@ -69,13 +73,11 @@ function createPwdPushRouter() {
         });
       }
 
-      console.log(`PwdPush POST ${endpoint} (ttl=${ttl} views=${maxViews})`);
-
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
+          'Accept':       'application/json',
           ...authHeaders,
         },
         body,
@@ -84,31 +86,33 @@ function createPwdPushRouter() {
       // Propagate 429 with Retry-After to the client
       if (response.status === 429) {
         const retryAfter = parseInt(response.headers.get('Retry-After') || '60', 10);
-        console.warn(`[RATE LIMIT] PwdPush upstream returned 429 — Retry-After: ${retryAfter}s`);
+        log('pwdpush_error', { ip, status_code: 429 });
         return res.status(429).json({ error: 'PwdPush rate limit hit.', retryAfter });
       }
 
       const text = await response.text();
       if (!response.ok) {
-        console.error(`PwdPush error ${response.status}: ${text}`);
+        log('pwdpush_error', { ip, status_code: response.status });
         return res.status(response.status).json({ error: `PwdPush returned ${response.status}.` });
       }
 
       let data;
       try { data = JSON.parse(text); }
       catch {
-        console.error(`PwdPush non-JSON response: ${text}`);
+        log('pwdpush_error', { ip, status_code: response.status, reason: 'non-JSON response' });
         return res.status(502).json({ error: 'PwdPush returned a non-JSON response.' });
       }
 
       // v2 uses html_url directly; v1 constructs from url_token
       const pushUrl = data.html_url || (data.url_token ? `${BASE_URL}/p/${data.url_token}` : null);
       if (!pushUrl) {
-        console.error('PwdPush response missing html_url and url_token:', JSON.stringify(data));
+        log('pwdpush_error', { ip, status_code: response.status, reason: 'missing url in response' });
         return res.status(502).json({ error: 'PwdPush response missing shareable URL.' });
       }
 
-      console.log(`PwdPush push created: ${pushUrl}`);
+      // Log the push event — never log the URL or payload
+      log('pwdpush', { ip, ttl, maxViews });
+
       return res.json({
         pushUrl,
         expiresAt:      data.expires_at      ?? null,
@@ -116,7 +120,7 @@ function createPwdPushRouter() {
       });
 
     } catch (err) {
-      console.error('PwdPush proxy error:', err.message);
+      log('pwdpush_error', { ip, status_code: 0, reason: 'network error' });
       return res.status(502).json({ error: 'Failed to reach PwdPush — check PWD_PUSH_URL and network connectivity.' });
     }
   });
@@ -139,7 +143,6 @@ function createPwdPushRouter() {
         return res.json({ ok: response.status === 200, version: 'v1/legacy', status: response.status });
       }
     } catch (err) {
-      console.error('PwdPush test error:', err.message);
       return res.json({ ok: false, error: err.message });
     }
   });

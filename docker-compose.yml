@@ -14,6 +14,13 @@ services:
       # ─── Rate Limits ─────────────────────────────────────────────────────────
       RATE_LIMIT_PER_MIN:  ${RATE_LIMIT_PER_MIN:-20}
       RATE_LIMIT_PER_HOUR: ${RATE_LIMIT_PER_HOUR:-200}
+    # Logs go to systemd journal on the host — no files inside the container.
+    # Query with: journalctl -t keychaos -f
+    # Persist through container restarts and survive docker stop/start.
+    logging:
+      driver: journald
+      options:
+        tag: keychaos
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       interval: 30s
