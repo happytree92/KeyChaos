@@ -24,11 +24,17 @@ if (authDisabled) {
     process.exit(1);
   }
 
-  app.use(basicAuth({
+  const auth = basicAuth({
     users: { [user]: pass },
     challenge: true,
     realm: 'KeyChaos',
-  }));
+  });
+
+  // Exempt /api/health so the Docker healthcheck doesn't need credentials
+  app.use((req, res, next) => {
+    if (req.path === '/api/health') return next();
+    return auth(req, res, next);
+  });
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
