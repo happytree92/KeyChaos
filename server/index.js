@@ -7,6 +7,7 @@ const rateLimit  = require('express-rate-limit');
 const path       = require('path');
 const fs         = require('fs');
 const { createPwdPushRouter }        = require('./routes/pwdpush');
+const { createGenerateRouter }       = require('./routes/generate');
 const { log, recordRateLimitHit, THRESHOLD_COUNT } = require('./logger');
 const { requestLogger }              = require('./middleware/logger');
 
@@ -117,7 +118,8 @@ app.use(express.json({ limit: '10kb' }));
 app.use(requestLogger);
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
-app.use('/api/pwdpush', createPwdPushRouter());
+app.use('/api/generate', createGenerateRouter());
+app.use('/api/pwdpush',  createPwdPushRouter());
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', version: VERSION });

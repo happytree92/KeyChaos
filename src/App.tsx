@@ -1,10 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { PasswordEngine, GeneratorConfig } from './engine/passwordEngine'
 import {
-  generateSmartPass, generateSmartPassBatch, calculateSmartPassEntropy,
-  SmartPassOptions,
-} from './lib/smartpass'
-import {
   Shield, RefreshCw, Copy, CheckCircle2, Share2, ChevronDown,
   ToggleLeft, ToggleRight, Info,
 } from 'lucide-react'
@@ -13,6 +9,11 @@ import {
 
 type AppMode   = 'smartpass' | 'password' | 'passphrase'
 type PushState = 'idle' | 'loading' | 'done' | 'error'
+
+interface SmartPassOptions {
+  digitCount: 2 | 3 | 4
+  symbolSet: 'safe' | 'none'
+}
 type ExpireDuration = 6 | 12 | 15
 
 interface UIEntry {
@@ -58,6 +59,7 @@ export default function App() {
   const [pushDuration,  setPushDuration]  = useState<ExpireDuration>(6)
   const [pushViews,     setPushViews]     = useState(5)
   const [entries,       setEntries]       = useState<UIEntry[]>([])
+  const [generating,    setGenerating]    = useState(false)
   const [health,        setHealth]        = useState<{ status: string; version: string } | null>(null)
   const [toast,         setToast]         = useState('')
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -76,7 +78,8 @@ export default function App() {
 
   // Accepts optional overrides so mode-switch clicks can generate immediately
   // without waiting for React to flush state.
-  const generateWithMode = useCallback((
+  // SmartPass is async (API call); Random/Passphrase remain synchronous.
+  const generateWithMode = useCallback(async (
     overrideMode?: AppMode,
     overrideQty?: 1 | 3 | 5,
   ) => {
@@ -84,9 +87,22 @@ export default function App() {
     const qty  = overrideQty  ?? quantity
 
     if (mode === 'smartpass') {
-      const batch = generateSmartPassBatch(qty, smartpassOpts)
-      const ent   = calculateSmartPassEntropy(smartpassOpts)
-      setEntries(batch.map(v => makeEntry(v, ent)))
+      setGenerating(true)
+      try {
+        const res = await fetch('/api/generate/smartpass', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ digitCount: smartpassOpts.digitCount, symbolSet: smartpassOpts.symbolSet, count: qty }),
+        })
+        if (res.status === 429) { showToast('Too many requests — try again shortly'); return }
+        if (!res.ok)            { showToast('Generation failed — please try again');  return }
+        const data = await res.json()
+        setEntries(data.passwords.map((v: string) => makeEntry(v, data.entropy_bits)))
+      } catch {
+        showToast('Generation failed — please try again')
+      } finally {
+        setGenerating(false)
+      }
     } else {
       const cfg   = { ...config, mode: mode as 'password' | 'passphrase' }
       const batch = PasswordEngine.generateBatch(cfg, qty)
@@ -110,13 +126,20 @@ export default function App() {
 
   // ─── Per-card regenerate ────────────────────────────────────────────────────
 
-  const regenerateOne = (index: number) => {
+  const regenerateOne = async (index: number) => {
     if (appMode === 'smartpass') {
-      const value   = generateSmartPass(smartpassOpts)
-      const entropy = calculateSmartPassEntropy(smartpassOpts)
-      updateEntry(index, makeEntry(value, entropy))
+      try {
+        const res = await fetch('/api/generate/smartpass', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ digitCount: smartpassOpts.digitCount, symbolSet: smartpassOpts.symbolSet, count: 1 }),
+        })
+        if (!res.ok) return
+        const data = await res.json()
+        updateEntry(index, makeEntry(data.passwords[0], data.entropy_bits))
+      } catch { /* silent — card stays unchanged */ }
     } else {
-      const cfg           = { ...config, mode: appMode as 'password' | 'passphrase' }
+      const cfg            = { ...config, mode: appMode as 'password' | 'passphrase' }
       const { value, entropy } = PasswordEngine.generate(cfg)
       updateEntry(index, makeEntry(value, entropy))
     }
@@ -378,10 +401,11 @@ export default function App() {
             </div>
             <button
               onClick={() => generateWithMode()}
-              className="flex-1 flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-white font-bold py-2.5 rounded-xl shadow-lg shadow-primary/20 transition-all active:scale-95"
+              disabled={generating}
+              className="flex-1 flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-white font-bold py-2.5 rounded-xl shadow-lg shadow-primary/20 transition-all active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <RefreshCw className="w-4 h-4" />
-              Generate
+              <RefreshCw className={`w-4 h-4 ${generating ? 'animate-spin' : ''}`} />
+              {generating ? 'Generating…' : 'Generate'}
             </button>
           </div>
         </div>
