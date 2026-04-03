@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { generateSmartPass, calculateEntropy } = require('../lib/smartpass');
+const { generateSmartPass, calculateEntropy, PEPPER_ACTIVE } = require('../lib/smartpass');
 const { log } = require('../logger');
 
 const VALID_DIGIT_COUNTS = new Set([2, 3, 4]);
@@ -37,7 +37,7 @@ function createGenerateRouter() {
 
     log('generate', { mode: 'smartpass', count: opts.count, ip });
 
-    return res.json({ passwords, entropy_bits });
+    return res.json({ passwords, entropy_bits, pepper_active: PEPPER_ACTIVE });
   });
 
   return router;

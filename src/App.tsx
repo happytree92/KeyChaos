@@ -19,6 +19,7 @@ type ExpireDuration = 6 | 12 | 15
 interface UIEntry {
   value:          string
   entropy:        number
+  pepper_active:  boolean
   copied:         boolean
   pushState:      PushState
   pushUrl:        string
@@ -39,8 +40,8 @@ const DEFAULT_PASSWORD_CONFIG: GeneratorConfig = {
 
 const DEFAULT_SMARTPASS_OPTS: SmartPassOptions = { digitCount: 2, symbolSet: 'safe' }
 
-function makeEntry(value: string, entropy: number): UIEntry {
-  return { value, entropy, copied: false, pushState: 'idle', pushUrl: '', expiresAt: null, viewsRemaining: null, retryAfter: null }
+function makeEntry(value: string, entropy: number, pepper_active = false): UIEntry {
+  return { value, entropy, pepper_active, copied: false, pushState: 'idle', pushUrl: '', expiresAt: null, viewsRemaining: null, retryAfter: null }
 }
 
 const MODE_LABELS: Record<AppMode, string> = {
@@ -97,7 +98,7 @@ export default function App() {
         if (res.status === 429) { showToast('Too many requests — try again shortly'); return }
         if (!res.ok)            { showToast('Generation failed — please try again');  return }
         const data = await res.json()
-        setEntries(data.passwords.map((v: string) => makeEntry(v, data.entropy_bits)))
+        setEntries(data.passwords.map((v: string) => makeEntry(v, data.entropy_bits, data.pepper_active)))
       } catch {
         showToast('Generation failed — please try again')
       } finally {
@@ -136,7 +137,7 @@ export default function App() {
         })
         if (!res.ok) return
         const data = await res.json()
-        updateEntry(index, makeEntry(data.passwords[0], data.entropy_bits))
+        updateEntry(index, makeEntry(data.passwords[0], data.entropy_bits, data.pepper_active))
       } catch { /* silent — card stays unchanged */ }
     } else {
       const cfg            = { ...config, mode: appMode as 'password' | 'passphrase' }
@@ -474,15 +475,24 @@ export default function App() {
                     <span className={`text-xs font-black uppercase tracking-widest shrink-0 ${color}`}>
                       {label}
                     </span>
-                    <span className="text-xs text-secondary font-bold tabular-nums shrink-0">
-                      ~{entry.entropy} bits
-                    </span>
-                    {isSmartPass && (
-                      <span
-                        className="shrink-0 cursor-help"
-                        title="Suitable for shared/temporary credentials via PwdPush. For master passwords, use Random mode with length 24+."
-                      >
-                        <Info className="w-3.5 h-3.5 text-secondary/40 hover:text-secondary transition-colors" />
+                    {isSmartPass ? (
+                      <>
+                        <span
+                          className={`text-xs font-bold tabular-nums shrink-0 ${entry.pepper_active ? 'text-success' : 'text-warning'}`}
+                          title={!entry.pepper_active ? 'Set SMARTPASS_PEPPER in your .env for additional security' : undefined}
+                        >
+                          {entry.pepper_active ? '✦' : '⚠'} {entry.entropy} bits
+                        </span>
+                        <span
+                          className={`text-[10px] font-medium shrink-0 ${entry.pepper_active ? 'text-success/60' : 'text-warning/60'}`}
+                          title={!entry.pepper_active ? 'Set SMARTPASS_PEPPER in your .env for additional security' : undefined}
+                        >
+                          ({entry.pepper_active ? 'pepper active' : 'no pepper'})
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-xs text-secondary font-bold tabular-nums shrink-0">
+                        ~{entry.entropy} bits
                       </span>
                     )}
                   </div>

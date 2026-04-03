@@ -33,6 +33,9 @@ console.log(`   UI dir   : ${serveDir} (index.html ${indexExists ? '✅' : '❌ 
 if (!process.env.PWD_PUSH_TOKEN) {
   console.warn('⚠️  PWD_PUSH_TOKEN is not set — PwdPush may rate-limit unauthenticated requests.');
 }
+if (!process.env.SMARTPASS_PEPPER) {
+  log('startup_warning', { msg: 'SMARTPASS_PEPPER not set — pepper disabled' });
+}
 
 // ─── Reverse Proxy Trust ─────────────────────────────────────────────────────
 // Required when running behind Pangolin / nginx — lets Express read the real

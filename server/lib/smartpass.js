@@ -1,5 +1,28 @@
 'use strict';
 
+const { createHmac } = require('crypto');
+
+// ─── Pepper ───────────────────────────────────────────────────────────────────
+// Read once at startup; never logged, never sent to the client.
+
+const PEPPER        = process.env.SMARTPASS_PEPPER || '';
+const PEPPER_ACTIVE = PEPPER.length > 0;
+
+const BASE62 = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+
+/**
+ * Append a 2-char HMAC-SHA256-derived suffix to `password`.
+ * Suffix chars are drawn from BASE62 (a-z A-Z 0-9).
+ * When no pepper is configured this is a no-op.
+ */
+function applyPepper(password) {
+  if (!PEPPER) return password;
+  const hmac = createHmac('sha256', PEPPER).update(password).digest();
+  const c1   = BASE62[hmac[0] % 62];
+  const c2   = BASE62[hmac[1] % 62];
+  return password + c1 + c2;
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SYMBOLS = ['#', '@', '!', '*', '+', '=', '-'];
@@ -50,7 +73,7 @@ function generateOne(options) {
 
   const symbol = symbolSet === 'safe' ? randomFrom(SYMBOLS) : '';
   const digits = generateDigits(digitCount);
-  return adj + noun + symbol + digits;
+  return applyPepper(adj + noun + symbol + digits);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -76,10 +99,11 @@ function calculateEntropy(options) {
   const nounBits   = Math.log2(180);
   const symbolBits = options.symbolSet === 'safe' ? Math.log2(SYMBOLS.length) : 0;
   const digitBits  = options.digitCount * Math.log2(10);
-  return Math.round((adjBits + nounBits + symbolBits + digitBits) * 10) / 10;
+  const pepperBits = PEPPER_ACTIVE ? 11.6 : 0;   // 62^2 = 3844 ≈ 2^11.6
+  return Math.round((adjBits + nounBits + symbolBits + digitBits + pepperBits) * 10) / 10;
 }
 
-module.exports = { generateSmartPass, calculateEntropy };
+module.exports = { generateSmartPass, calculateEntropy, PEPPER_ACTIVE };
 
 // ─── ADJECTIVES ───────────────────────────────────────────────────────────────
 

@@ -11,6 +11,11 @@ services:
       PWD_PUSH_URL:     ${PWD_PUSH_URL:-https://pwpush.com}
       PWD_PUSH_VERSION: ${PWD_PUSH_VERSION:-v2}
       PWD_PUSH_TOKEN:   ${PWD_PUSH_TOKEN:-}
+      # ─── SmartPass pepper ────────────────────────────────────────────────────
+      # Generate a pepper: openssl rand -base64 32
+      # Set SMARTPASS_PEPPER to the output.
+      # Never commit this value — treat it like a secret key.
+      SMARTPASS_PEPPER: ${SMARTPASS_PEPPER:-}
       # ─── Reverse Proxy ───────────────────────────────────────────────────────
       TRUST_PROXY: ${TRUST_PROXY:-true}
       # ─── Rate Limits ─────────────────────────────────────────────────────────
