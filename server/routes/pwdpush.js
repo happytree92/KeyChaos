@@ -2,83 +2,112 @@
 
 const express = require('express');
 
+// expire_after_duration enum → days (for v1 fallback conversion)
+const DURATION_TO_DAYS = { 6: 1, 12: 7, 15: 30 };
+const VALID_DURATIONS = new Set([6, 12, 15]);
+
 function createPwdPushRouter() {
   const router = express.Router();
 
-  const BASE_URL = (process.env.PWD_PUSH_URL || 'https://pwpush.com').replace(/\/$/, '');
-  const TOKEN = process.env.PWD_PUSH_TOKEN || '';
-  const API_VERSION = process.env.PWD_PUSH_API_VERSION || 'v2';
+  const BASE_URL    = (process.env.PWD_PUSH_URL     || 'https://pwpush.com').replace(/\/$/, '');
+  const TOKEN       = process.env.PWD_PUSH_TOKEN     || '';
+  // PWD_PUSH_VERSION is the canonical var; fall back to legacy PWD_PUSH_API_VERSION
+  const API_VERSION = process.env.PWD_PUSH_VERSION   ||
+                      process.env.PWD_PUSH_API_VERSION || 'v2';
 
-  console.log(`   PwdPush  : ${BASE_URL} (API ${API_VERSION}) token:${TOKEN ? '✅' : 'none'}`);
+  console.log(`   PwdPush  : ${BASE_URL} (API ${API_VERSION}) token:${TOKEN ? '✅' : 'none ⚠️'}`);
 
   // POST /api/pwdpush/push
   router.post('/push', async (req, res) => {
-    const { payload, ttl = 3, maxViews = 5, deletable = true, note = '' } = req.body;
+    let { payload, ttl, maxViews, deletable = true, name = '' } = req.body;
 
-    if (!payload) {
-      return res.status(400).json({ error: 'payload is required' });
+    if (!payload || typeof payload !== 'string') {
+      return res.status(400).json({ error: 'payload is required and must be a string.' });
+    }
+    if (payload.length > 10_000) {
+      return res.status(400).json({ error: 'payload exceeds maximum length of 10,000 characters.' });
     }
 
-    const headers = {
-      'Content-Type': 'application/json',
-      ...(TOKEN && { Authorization: `Bearer ${TOKEN}` }),
-    };
+    // Clamp and validate ttl (expire_after_duration enum)
+    ttl = parseInt(ttl, 10);
+    if (!VALID_DURATIONS.has(ttl)) ttl = 6; // default: 1 day
 
-    let endpoint, body;
+    // Clamp maxViews to 1–100
+    maxViews = parseInt(maxViews, 10);
+    if (isNaN(maxViews) || maxViews < 1)   maxViews = 1;
+    if (maxViews > 100)                     maxViews = 100;
 
-    if (API_VERSION === 'v2') {
-      endpoint = `${BASE_URL}/api/v2/pushes`;
-      body = JSON.stringify({
-        push: {
-          payload,
-          expire_after_duration: ttl,
-          expire_after_views: maxViews,
-          deletable_by_viewer: deletable,
-          note,
-        },
-      });
-    } else {
-      endpoint = `${BASE_URL}/p.json`;
-      body = JSON.stringify({
-        password: {
-          payload,
-          expire_after_days: ttl,
-          expire_after_views: maxViews,
-          deletable_by_viewer: deletable,
-          note,
-        },
-      });
-    }
+    const authHeaders = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
 
     try {
-      console.log(`PwdPush POST ${endpoint}`);
       const { default: fetch } = await import('node-fetch');
-      const response = await fetch(endpoint, { method: 'POST', headers, body });
+      let endpoint, body;
+
+      if (API_VERSION === 'v2') {
+        endpoint = `${BASE_URL}/api/v2/pushes`;
+        body = JSON.stringify({
+          push: {
+            payload,
+            expire_after_duration:  ttl,
+            expire_after_views:     maxViews,
+            deletable_by_viewer:    deletable,
+            name,
+          },
+        });
+      } else {
+        // v1 / OSS self-hosted — flat body, duration as days
+        endpoint = `${BASE_URL}/p.json`;
+        body = JSON.stringify({
+          password: {
+            payload,
+            expire_after_days:  DURATION_TO_DAYS[ttl] ?? 1,
+            expire_after_views: maxViews,
+            deletable_by_viewer: deletable,
+          },
+        });
+      }
+
+      console.log(`PwdPush POST ${endpoint} (ttl=${ttl} views=${maxViews})`);
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body,
+      });
+
+      // Propagate 429 with Retry-After to the client
+      if (response.status === 429) {
+        const retryAfter = parseInt(response.headers.get('Retry-After') || '60', 10);
+        console.warn(`[RATE LIMIT] PwdPush upstream returned 429 — Retry-After: ${retryAfter}s`);
+        return res.status(429).json({ error: 'PwdPush rate limit hit.', retryAfter });
+      }
 
       const text = await response.text();
-
       if (!response.ok) {
         console.error(`PwdPush error ${response.status}: ${text}`);
-        return res.status(response.status).json({ error: `PwdPush returned ${response.status}` });
+        return res.status(response.status).json({ error: `PwdPush returned ${response.status}.` });
       }
 
       let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
+      try { data = JSON.parse(text); }
+      catch {
         console.error(`PwdPush non-JSON response: ${text}`);
-        return res.status(502).json({ error: 'PwdPush returned a non-JSON response' });
+        return res.status(502).json({ error: 'PwdPush returned a non-JSON response.' });
       }
 
-      const urlToken = data.url_token;
-      if (!urlToken) {
-        console.error(`PwdPush response missing url_token:`, JSON.stringify(data));
-        return res.status(502).json({ error: 'PwdPush response missing url_token' });
+      // v2 uses html_url directly; v1 constructs from url_token
+      const pushUrl = data.html_url || (data.url_token ? `${BASE_URL}/p/${data.url_token}` : null);
+      if (!pushUrl) {
+        console.error('PwdPush response missing html_url and url_token:', JSON.stringify(data));
+        return res.status(502).json({ error: 'PwdPush response missing shareable URL.' });
       }
 
-      const pushUrl = `${BASE_URL}/p/${urlToken}`;
       console.log(`PwdPush push created: ${pushUrl}`);
-      return res.json({ pushUrl, urlToken });
+      return res.json({
+        pushUrl,
+        expiresAt:      data.expires_at      ?? null,
+        viewsRemaining: data.views_remaining  ?? maxViews,
+      });
 
     } catch (err) {
       console.error('PwdPush proxy error:', err.message);
@@ -99,10 +128,8 @@ function createPwdPushRouter() {
         const data = await response.json();
         return res.json({ ok: true, version: data.application_version, edition: data.edition });
       } else {
-        // v1 probe — GET /p.json should return 200 with an empty array
         const response = await fetch(`${BASE_URL}/p.json`, { method: 'GET' });
-        const ok = response.status === 200;
-        return res.json({ ok, version: 'v1/legacy', status: response.status });
+        return res.json({ ok: response.status === 200, version: 'v1/legacy', status: response.status });
       }
     } catch (err) {
       console.error('PwdPush test error:', err.message);

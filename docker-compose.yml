@@ -1,20 +1,19 @@
 services:
   keychaos:
-    image: keychaos:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/happytree92/keychaos:latest
+    container_name: keychaos
     restart: unless-stopped
-    environment:
-      PORT: 3000
-      KC_AUTH_USER: ${KC_AUTH_USER:?KC_AUTH_USER is required}
-      KC_AUTH_PASS: ${KC_AUTH_PASS:?KC_AUTH_PASS is required}
-      # KC_AUTH_DISABLED: "true"   # Uncomment only behind a trusted reverse proxy
-      PWD_PUSH_URL: ${PWD_PUSH_URL:-https://pwpush.com}
-      PWD_PUSH_TOKEN: ${PWD_PUSH_TOKEN:-}
-      PWD_PUSH_API_VERSION: ${PWD_PUSH_API_VERSION:-v2}
     ports:
       - "3000:3000"
+    environment:
+      PORT: 3000
+      # ─── PwdPush ─────────────────────────────────────────────────────────────
+      PWD_PUSH_URL:     ${PWD_PUSH_URL:-https://pwpush.com}
+      PWD_PUSH_VERSION: ${PWD_PUSH_VERSION:-v2}
+      PWD_PUSH_TOKEN:   ${PWD_PUSH_TOKEN:-}
+      # ─── Rate Limits ─────────────────────────────────────────────────────────
+      RATE_LIMIT_PER_MIN:  ${RATE_LIMIT_PER_MIN:-20}
+      RATE_LIMIT_PER_HOUR: ${RATE_LIMIT_PER_HOUR:-200}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       interval: 30s
@@ -22,7 +21,7 @@ services:
       start_period: 15s
       retries: 3
 
-  # Optional: uncomment this block to add TLS via nginx
+  # Optional nginx TLS sidecar — uncomment and configure nginx/nginx.conf
   # nginx:
   #   image: nginx:alpine
   #   restart: unless-stopped
