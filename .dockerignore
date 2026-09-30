@@ -1,0 +1,12 @@
+# Keep secrets and local artefacts out of the Docker build context
+.env
+.env.*
+!.env.example
+*.secret
+.git
+node_modules
+dist
+coverage
+*.log
+.vscode
+.idea

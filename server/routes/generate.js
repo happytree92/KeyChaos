@@ -16,7 +16,7 @@ function createGenerateRouter() {
   // Returns: { passwords: string[], entropy_bits: number }
   router.post('/smartpass', (req, res) => {
     const ip = req.clientIp || req.ip;
-    const { digitCount, symbolSet, count } = req.body;
+    const { digitCount, symbolSet, count } = req.body || {};
 
     if (!VALID_DIGIT_COUNTS.has(Number(digitCount))) {
       log('invalid_params', { ip, reason: 'invalid digitCount' });

@@ -8,6 +8,14 @@ const AMBIGUOUS = new Set(['0', 'O', '1', 'l', 'I', '|']);
 
 const MAX_RETRIES = 50;
 
+/** Uniform integer in [0, max) from the Web Crypto CSPRNG (rejection sampling, no modulo bias). */
+function secureRandomInt(max: number): number {
+  const limit = Math.floor(0x100000000 / max) * max;
+  const buf   = new Uint32Array(1);
+  do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
+  return buf[0] % max;
+}
+
 export interface GeneratorConfig {
   mode:             'password' | 'passphrase';
   // Password mode
@@ -47,7 +55,7 @@ export class PasswordEngine {
     const pool   = this.buildCharPool(config);
     const length = Math.max(8, Math.min(128, config.length));
     if (pool.length === 0) return '';
-    return Array.from({ length }, () => pool[Math.floor(Math.random() * pool.length)]).join('');
+    return Array.from({ length }, () => pool[secureRandomInt(pool.length)]).join('');
   }
 
   // ─── Passphrase Generation ─────────────────────────────────────────────────
@@ -64,7 +72,7 @@ export class PasswordEngine {
     if (depth >= MAX_RETRIES) {
       throw new Error('PasswordEngine: blocklist exhausted all candidates');
     }
-    const word = allWords[Math.floor(Math.random() * allWords.length)];
+    const word = allWords[secureRandomInt(allWords.length)];
     if (dictionary.blocklist.includes(word.toLowerCase())) {
       return this.pickWord(allWords, depth + 1);
     }

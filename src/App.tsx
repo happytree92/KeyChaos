@@ -215,7 +215,7 @@ export default function App() {
             Key<span className="text-primary">Chaos</span>
           </h1>
           <p className="text-secondary text-xs font-bold tracking-widest uppercase">
-            Professional Generator · v{health?.version || '1.3.0'}
+            Professional Generator · v{health?.version || '1.4.0'}
           </p>
         </header>
 

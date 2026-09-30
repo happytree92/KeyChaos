@@ -1,7 +1,7 @@
 # KeyChaos
 
 **Professional password generator for MSP helpdesk teams.**
-Self-hostable · Docker · React + Node.js · v1.3.0
+Self-hostable · Docker · React + Node.js · v1.4.0
 
 ---
 
@@ -84,8 +84,8 @@ Express (Node.js, port 3000)
 
 **Format:** `[Adjective][Noun][Symbol][Digits]`
 
-- Adjective drawn from a curated 163-entry list (max 8 chars, positive/neutral connotation)
-- Noun drawn from a curated 168-entry list (max 9 chars, concrete/visualisable)
+- Adjective drawn from a curated 149-entry list (max 8 chars, positive/neutral connotation)
+- Noun drawn from a curated 164-entry list (max 9 chars, concrete/visualisable)
 - Symbol from `['#', '@', '!', '*', '+', '=', '-']`
 - Digits: 2, 3, or 4 digits — blocked strings excluded (69, 420, 666, all-same-digit, etc.)
 - Specific adjective+noun combinations are blocked (BLOCKED_PAIRS) to prevent offensive concatenations
@@ -93,10 +93,12 @@ Express (Node.js, port 3000)
 **Pepper (optional, recommended):**
 When `SMARTPASS_PEPPER` is set, the symbol and digit selection is replaced by an HMAC-SHA256 derivation:
 ```
-HMAC(pepper, adj+noun)[0]      → symbol index
-HMAC(pepper, adj+noun)[1..N]   → digits
+HMAC(pepper, adj+noun+nonce)[0]      → symbol index
+HMAC(pepper, adj+noun+nonce)[1..N]   → digits
 ```
-Password length is identical. The pepper makes output unreproducible without the secret key, even to someone who has the wordlist and source code.
+`nonce` is 32 fresh CSPRNG bytes per password, so the suffix is never a fixed function of the word pair. Password length is identical.
+
+All selection (words, symbols, digits) uses a CSPRNG — `crypto.randomInt` on the server, `crypto.getRandomValues` in the browser.
 
 **Entropy display:** `✦ N bits (pepper active)` in green / `⚠ N bits (no pepper)` in amber.
 
@@ -128,7 +130,7 @@ TTL enum: `6` = 1 day, `12` = 1 week, `15` = 1 month. Supports PwdPush API v2 (d
 
 ### `GET /api/health`
 ```json
-{ "status": "ok", "version": "1.3.0" }
+{ "status": "ok", "version": "1.4.0" }
 ```
 
 ---
@@ -143,7 +145,10 @@ TTL enum: `6` = 1 day, `12` = 1 week, `15` = 1 month. Supports PwdPush API v2 (d
 | Reverse proxy trust | `app.set('trust proxy', 1)` controlled by `TRUST_PROXY` env var |
 | API token isolation | `PWD_PUSH_TOKEN` read server-side, never sent to browser |
 | SmartPass isolation | Word lists + generation code never bundled into frontend JS |
-| Pepper | `SMARTPASS_PEPPER` — HMAC-SHA256, never logged, never in API responses |
+| Pepper | `SMARTPASS_PEPPER` — HMAC-SHA256 with per-password nonce, never logged, never in API responses |
+| CSPRNG | All generation uses `crypto.randomInt` / `crypto.getRandomValues` — never `Math.random()` |
+| Log IP source | `req.ip` (respects `trust proxy`) — clients can't spoof logged IPs via `X-Forwarded-For` |
+| Build context | `.dockerignore` keeps `.env`, `.git` and local artefacts out of the image |
 | Non-root container | `keychaos` user in Docker runtime stage |
 
 ---

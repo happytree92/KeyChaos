@@ -41,8 +41,15 @@ export const BLOCKED_PAIRS = new Set([
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+function secureRandomInt(max: number): number {
+  const limit = Math.floor(0x100000000 / max) * max
+  const buf   = new Uint32Array(1)
+  do { crypto.getRandomValues(buf) } while (buf[0] >= limit)
+  return buf[0] % max
+}
+
 function randomFrom<T>(arr: readonly T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]
+  return arr[secureRandomInt(arr.length)]
 }
 
 function isBlockedNumber(digits: string): boolean {
@@ -54,7 +61,7 @@ function isBlockedNumber(digits: string): boolean {
 
 function generateDigits(count: 2 | 3 | 4, maxAttempts = 50): string {
   for (let i = 0; i < maxAttempts; i++) {
-    const d = Array.from({ length: count }, () => Math.floor(Math.random() * 10)).join('')
+    const d = Array.from({ length: count }, () => secureRandomInt(10)).join('')
     if (!isBlockedNumber(d)) return d
   }
   return count === 2 ? '47' : count === 3 ? '472' : '4721' // guaranteed-safe fallback

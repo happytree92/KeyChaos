@@ -13,7 +13,7 @@ const { requestLogger }              = require('./middleware/logger');
 
 const app     = express();
 const PORT    = process.env.PORT || 3000;
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 const TRUST_PROXY = process.env.TRUST_PROXY !== 'false';  // default true
