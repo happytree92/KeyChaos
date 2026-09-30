@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import {
   Check, Copy, CopyCheck, ExternalLink, KeyRound, Monitor, Moon, RefreshCw, Share2, Sun,
 } from 'lucide-react'
@@ -71,11 +71,6 @@ const IDLE_PUSH: PushInfo = { state: 'idle', url: '', expiresAt: null, viewsRema
 
 const clampViews = (raw: string) => Math.max(1, Math.min(100, parseInt(raw, 10) || 1))
 
-function isTypingTarget(el: EventTarget | null) {
-  if (!(el instanceof HTMLElement)) return false
-  return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
-}
-
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -97,11 +92,30 @@ export default function App() {
   const nextId     = useRef(0)
   const requestSeq = useRef(0)   // bumps on every full generate; stale async results are dropped
   const snackTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const timers     = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+  const entriesRef = useRef(entries)
+  entriesRef.current = entries
 
   const showSnack = useCallback((msg: string) => {
     if (snackTimer.current) clearTimeout(snackTimer.current)
     setSnack(msg)
     snackTimer.current = setTimeout(() => setSnack(''), 2500)
+  }, [])
+
+  // One pending timer per key (e.g. "copied:12"); re-arming replaces the old one.
+  const schedule = (key: string, fn: () => void, ms: number) => {
+    const map  = timers.current
+    const prev = map.get(key)
+    if (prev) clearTimeout(prev)
+    map.set(key, setTimeout(() => { map.delete(key); fn() }, ms))
+  }
+
+  useEffect(() => {
+    const map = timers.current
+    return () => {
+      map.forEach(clearTimeout)
+      if (snackTimer.current) clearTimeout(snackTimer.current)
+    }
   }, [])
 
   const makeEntry = (value: string, entropy: number, pepperActive: boolean | null): Entry =>
@@ -113,12 +127,18 @@ export default function App() {
   const updateConfig = (patch: Partial<GeneratorConfig>) => setConfig(c => ({ ...c, ...patch }))
 
   // ─── Generate ───────────────────────────────────────────────────────────────
-  // Re-runs automatically whenever the mode or any option changes, so the list
-  // always reflects what's on screen — no "remember to press Generate" step.
+
+  // Fingerprint of the options a batch was generated with, so we can tell when
+  // the list on screen no longer matches the controls.
+  const optionsKey = JSON.stringify([mode, config, quantity, digits, symbols])
+  const [generatedWith, setGeneratedWith] = useState<{ key: string; mode: AppMode } | null>(null)
+  const stale      = generatedWith !== null && generatedWith.key !== optionsKey
+  const holdsLinks = entries.some(e => e.push.state === 'loading' || e.push.state === 'done')
 
   const generate = useCallback(async () => {
     const seq = ++requestSeq.current
     setGenError('')
+    setGeneratedWith({ key: optionsKey, mode })
 
     if (mode !== 'smartpass') {
       setGenerating(false)
@@ -140,28 +160,42 @@ export default function App() {
     } finally {
       if (seq === requestSeq.current) setGenerating(false)
     }
-  }, [mode, config, quantity, digits, symbols, showSnack])
+  }, [mode, config, quantity, digits, symbols, optionsKey, showSnack])
 
-  useEffect(() => { generate() }, [generate])
+  // When options change:
+  //  - Random / Passphrase regenerate immediately (client-side, free).
+  //  - SmartPass costs a request against the shared /api rate limit (which
+  //    PwdPush also needs), so option tweaks wait for Generate; switching into
+  //    SmartPass from another mode still generates once.
+  //  - A list holding a PwdPush link (or a push in flight) is never replaced
+  //    without the user asking — the "Options changed" hint shows instead.
+  useEffect(() => {
+    if (generatedWith?.key === optionsKey) return
+    const linksOnScreen = entriesRef.current.some(e => e.push.state === 'loading' || e.push.state === 'done')
+    const auto = generatedWith === null
+      || (!linksOnScreen && (mode !== 'smartpass' || generatedWith.mode !== 'smartpass'))
+    if (auto) generate()
+  }, [optionsKey, generatedWith, mode, generate])
 
   useEffect(() => {
     fetchHealth().then(setHealth).catch(() => setHealth({ status: 'offline', version: APP_VERSION_FALLBACK }))
   }, [])
 
-  const regenerateOne = async (id: number) => {
-    const seq = requestSeq.current
+  // A regenerated card is a new entry with a fresh id, so anything async still
+  // keyed to the old id (a share result, a copy timer) matches nothing and is dropped.
+  const replaceEntry = (oldId: number, next: Entry) =>
+    setEntries(list => list.map(e => (e.id === oldId ? next : e)))
+
+  const regenerateOne = async (entry: Entry) => {
+    if (entry.push.state === 'loading') return
     if (mode !== 'smartpass') {
       const { value, entropy } = PasswordEngine.generate({ ...config, mode })
-      updateEntry(id, { value, entropy, copied: false, push: IDLE_PUSH })
+      replaceEntry(entry.id, makeEntry(value, entropy, null))
       return
     }
     try {
       const data = await generateSmartPass(digits, symbols, 1)
-      if (seq !== requestSeq.current) return   // list was replaced meanwhile
-      updateEntry(id, {
-        value: data.passwords[0], entropy: data.entropy_bits, pepperActive: data.pepper_active,
-        copied: false, push: IDLE_PUSH,
-      })
+      replaceEntry(entry.id, makeEntry(data.passwords[0], data.entropy_bits, data.pepper_active))
     } catch (err) {
       showSnack(err instanceof ApiError ? err.message : 'Regeneration failed')
     }
@@ -183,7 +217,7 @@ export default function App() {
   const copyEntry = async (entry: Entry) => {
     if (!(await writeClipboard(entry.value, 'Password copied'))) return
     updateEntry(entry.id, { copied: true })
-    setTimeout(() => updateEntry(entry.id, { copied: false }), 2000)
+    schedule(`copied:${entry.id}`, () => updateEntry(entry.id, { copied: false }), 2000)
   }
 
   const copyAll = () => writeClipboard(entries.map(e => e.value).join('\n'), `${entries.length} passwords copied`)
@@ -202,28 +236,23 @@ export default function App() {
       const retryAfter = err instanceof ApiError ? err.retryAfter : null
       updateEntry(entry.id, { push: { ...IDLE_PUSH, state: 'error', retryAfter } })
       showSnack(err instanceof ApiError ? err.message : 'PwdPush failed')
-      // Clear the error badge later — but only if the user hasn't retried meanwhile.
-      setTimeout(() => setEntries(list => list.map(e =>
+      // Clear the error badge later — only if the user hasn't retried meanwhile.
+      schedule(`push:${entry.id}`, () => setEntries(list => list.map(e =>
         e.id === entry.id && e.push.state === 'error' ? { ...e, push: IDLE_PUSH } : e)), retryAfter ? 5000 : 4000)
     }
   }
 
-  // ─── Keyboard shortcuts ─────────────────────────────────────────────────────
-  // G = generate, 1–5 = copy that row. Ignored while typing in a field.
+  // ─── Keyboard: 1–5 copies that row ──────────────────────────────────────────
+  // Scoped to the results section (WCAG 2.1.4): active only while focus is
+  // inside it, so a stray keypress elsewhere never touches the clipboard.
 
-  const shortcuts = useRef({ generate, copyAt: (_i: number) => {} })
-  shortcuts.current = { generate, copyAt: (i: number) => { if (entries[i]) copyEntry(entries[i]) } }
-
-  useEffect(() => {
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
-      if (isTypingTarget(e.target)) return
-      if (e.key === 'g' || e.key === 'G') { e.preventDefault(); shortcuts.current.generate() }
-      else if (/^[1-5]$/.test(e.key))       { e.preventDefault(); shortcuts.current.copyAt(Number(e.key) - 1) }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  const onResultsKeyDown = (e: ReactKeyboardEvent<HTMLElement>) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || !/^[1-5]$/.test(e.key)) return
+    const entry = entries[Number(e.key) - 1]
+    if (!entry) return
+    e.preventDefault()
+    copyEntry(entry)
+  }
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
@@ -332,7 +361,6 @@ export default function App() {
           <Button className="w-full" onClick={generate} disabled={generating}
             icon={<RefreshCw className={cx('h-4 w-4', generating && 'animate-spin')} aria-hidden="true" />}>
             {generating ? 'Generating…' : 'Generate'}
-            <kbd className="ml-1 rounded border border-on-primary/40 px-1.5 font-sans text-[11px] leading-4 opacity-80">G</kbd>
           </Button>
 
           <hr className="border-outline-variant" />
@@ -354,11 +382,11 @@ export default function App() {
         </section>
 
         {/* ─── Results ──────────────────────────────────────────────────────── */}
-        <section aria-label="Generated passwords" className="space-y-3">
+        <section aria-label="Generated passwords" className="space-y-3" onKeyDown={onResultsKeyDown}>
           <div className="flex min-h-10 items-center gap-2">
             <h2 className="text-sm font-medium">Results</h2>
             <span className="hidden text-xs text-on-surface-variant sm:inline">
-              Click a password or press 1–{entries.length || quantity} to copy
+              Click a password to copy · in this list, keys 1–{entries.length || quantity} copy too
             </span>
             {entries.length > 1 && (
               <Button variant="text" className="ml-auto" onClick={copyAll}
@@ -368,6 +396,15 @@ export default function App() {
             )}
           </div>
 
+          {stale && (
+            <div className="flex items-center gap-3 rounded-xl bg-secondary-container py-1 pl-4 pr-1 text-sm text-on-secondary-container">
+              <span className="flex-1">
+                Options changed — press Generate to apply.{holdsLinks && ' Shared links below will be cleared.'}
+              </span>
+              <Button variant="text" onClick={generate} disabled={generating}>Generate</Button>
+            </div>
+          )}
+
           {genError && entries.length === 0 && (
             <p role="alert" className="rounded-xl bg-surface-container p-4 text-sm text-weak">{genError}</p>
           )}
@@ -376,7 +413,7 @@ export default function App() {
             {entries.map((entry, i) => (
               <ResultCard key={entry.id} index={i} entry={entry}
                 onCopy={() => copyEntry(entry)}
-                onRegenerate={() => regenerateOne(entry.id)}
+                onRegenerate={() => regenerateOne(entry)}
                 onShare={() => share(entry)}
                 onCopyLink={() => writeClipboard(entry.push.url, 'Link copied')} />
             ))}
@@ -411,19 +448,25 @@ interface ResultCardProps {
 function ResultCard({ index, entry, onCopy, onRegenerate, onShare, onCopyLink }: ResultCardProps) {
   const { label, level } = PasswordEngine.getStrengthLabel(entry.entropy)
   const { push }         = entry
+  const n                = index + 1
+  const shareText = push.state === 'loading' ? 'Sharing…'
+    : push.state === 'done'  ? 'Shared'
+    : push.state === 'error' ? (push.retryAfter ? `Retry in ${push.retryAfter}s` : 'Share failed')
+    : 'Share via PwdPush'
 
   return (
     <li className="rounded-xl border border-outline-variant bg-surface p-4">
       <div className="flex items-start gap-3">
         <span className="mt-1 w-4 shrink-0 text-right text-xs tabular-nums text-on-surface-variant" aria-hidden="true">
-          {index + 1}
+          {n}
         </span>
         <button type="button" onClick={onCopy} title="Click to copy"
-          aria-label={`Password ${index + 1}: ${entry.value}. Click to copy.`}
+          aria-label={`Password ${n}: ${entry.value}. Click to copy.`}
           className="min-w-0 flex-1 rounded-md text-left font-mono text-lg font-medium break-all hover:text-primary transition-colors">
           {entry.value}
         </button>
-        <IconButton label="Regenerate this password" onClick={onRegenerate} className="-mr-2 -mt-2">
+        <IconButton label={`Regenerate password ${n}`} onClick={onRegenerate}
+          disabled={push.state === 'loading'} className="-mr-2 -mt-2">
           <RefreshCw className="h-4 w-4" />
         </IconButton>
       </div>
@@ -445,19 +488,17 @@ function ResultCard({ index, entry, onCopy, onRegenerate, onShare, onCopyLink }:
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2 pl-7">
-        <Button variant="tonal" onClick={onCopy}
+        <Button variant="tonal" onClick={onCopy} aria-label={`${entry.copied ? 'Copied' : 'Copy'}, password ${n}`}
           icon={entry.copied ? <Check className="h-4 w-4" aria-hidden="true" /> : <Copy className="h-4 w-4" aria-hidden="true" />}>
           {entry.copied ? 'Copied' : 'Copy'}
         </Button>
-        <Button variant="outlined" onClick={onShare} disabled={push.state === 'loading' || push.state === 'done'}
+        <Button variant="outlined" onClick={onShare} aria-label={`${shareText}, password ${n}`}
+          disabled={push.state === 'loading' || push.state === 'done'}
           icon={push.state === 'loading'
             ? <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
             : <Share2 className="h-4 w-4" aria-hidden="true" />}
           className={push.state === 'error' ? 'border-weak text-weak' : undefined}>
-          {push.state === 'loading' ? 'Sharing…'
-            : push.state === 'done'  ? 'Shared'
-            : push.state === 'error' ? (push.retryAfter ? `Retry in ${push.retryAfter}s` : 'Share failed')
-            : 'Share via PwdPush'}
+          {shareText}
         </Button>
       </div>
 

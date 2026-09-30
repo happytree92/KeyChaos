@@ -60,6 +60,7 @@ Express (Node.js, port 3000)
 │   ├── engine/
 │   │   ├── passwordEngine.ts       Random + Passphrase generator (client-side)
 │   │   └── engine.test.ts          Vitest suite (36 tests)
+│   ├── App.test.tsx                Component tests (jsdom + Testing Library)
 │   └── lib/
 │       ├── api.ts                  Typed client for the backend API
 │       └── smartpass.ts            Algorithm only — used by unit tests,
@@ -89,9 +90,9 @@ Express (Node.js, port 3000)
 Material Design 3 with a muted earth-tone palette, light and dark (follows the OS, or pick with the theme button in the top bar). Built for speed:
 
 - Everything used day to day is on one screen — no menus or dialogs.
-- Results regenerate as soon as you change any option.
-- Click a password (or press `1`–`5`) to copy it; **Copy all** copies the whole batch, one per line.
-- Press `G` to generate a fresh batch.
+- Random and Passphrase regenerate as soon as you change an option. SmartPass waits for **Generate**, since each batch is a server request against the shared rate limit.
+- A list holding a PwdPush link is never replaced automatically — an "Options changed" hint asks first.
+- Click a password to copy it (or, with focus in the results list, press `1`–`5`); **Copy all** copies the whole batch, one per line.
 - PwdPush expiry and view limit sit next to the generator; each result has its own **Share via PwdPush** button.
 
 Fonts (Roboto, Roboto Mono) are bundled locally, so the strict `default-src 'self'` CSP needs no exceptions.
@@ -259,7 +260,7 @@ npm run dev
 # Run the Express backend
 npm run server
 
-# Run unit tests (36 tests — PasswordEngine + SmartPass algorithm)
+# Run tests (42 — PasswordEngine, SmartPass algorithm, App components)
 npm test
 
 # Production build
