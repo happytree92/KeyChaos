@@ -29,6 +29,8 @@ export interface GeneratorConfig {
   separator:        string;   // '-' | ' ' | '.'
 }
 
+export type StrengthLevel = 'strong' | 'fair' | 'weak';
+
 export interface PasswordEntry {
   value:   string;
   entropy: number;
@@ -107,10 +109,10 @@ export class PasswordEngine {
 
   // ─── Strength ──────────────────────────────────────────────────────────────
 
-  static getStrengthLabel(entropy: number): { label: string; color: string; barColor: string } {
-    if (entropy >= 70) return { label: 'Strong', color: 'text-success', barColor: 'bg-success shadow-[0_0_8px_rgba(52,211,153,0.3)]' };
-    if (entropy >= 40) return { label: 'Good',   color: 'text-warning', barColor: 'bg-warning shadow-[0_0_8px_rgba(251,191,36,0.2)]' };
-    return               { label: 'Weak',   color: 'text-error',   barColor: 'bg-error   shadow-[0_0_8px_rgba(248,113,113,0.2)]' };
+  static getStrengthLabel(entropy: number): { label: 'Strong' | 'Good' | 'Weak'; level: StrengthLevel } {
+    if (entropy >= 70) return { label: 'Strong', level: 'strong' };
+    if (entropy >= 40) return { label: 'Good',   level: 'fair' };
+    return               { label: 'Weak',   level: 'weak' };
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────

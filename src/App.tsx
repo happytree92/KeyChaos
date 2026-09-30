@@ -1,564 +1,487 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
-import { PasswordEngine, GeneratorConfig } from './engine/passwordEngine'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Shield, RefreshCw, Copy, CheckCircle2, Share2, ChevronDown,
-  ToggleLeft, ToggleRight, Info,
+  Check, Copy, CopyCheck, ExternalLink, KeyRound, Monitor, Moon, RefreshCw, Share2, Sun,
 } from 'lucide-react'
+import { PasswordEngine, type GeneratorConfig, type StrengthLevel } from './engine/passwordEngine'
+import {
+  ApiError, fetchHealth, generateSmartPass, pushToPwdPush,
+  type DigitCount, type ExpireDuration, type Health, type Quantity, type SymbolSet,
+} from './lib/api'
+import { useTheme, type ThemePreference } from './hooks/useTheme'
+import { Button, FieldLabel, IconButton, Segmented, SwitchRow, cx } from './components/ui'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type AppMode   = 'smartpass' | 'password' | 'passphrase'
-type PushState = 'idle' | 'loading' | 'done' | 'error'
+type AppMode = 'smartpass' | 'password' | 'passphrase'
 
-interface SmartPassOptions {
-  digitCount: 2 | 3 | 4
-  symbolSet: 'safe' | 'none'
-}
-type ExpireDuration = 6 | 12 | 15
-
-interface UIEntry {
-  value:          string
-  entropy:        number
-  pepper_active:  boolean
-  copied:         boolean
-  pushState:      PushState
-  pushUrl:        string
+interface PushInfo {
+  state:          'idle' | 'loading' | 'done' | 'error'
+  url:            string
   expiresAt:      string | null
   viewsRemaining: number | null
   retryAfter:     number | null
 }
 
+interface Entry {
+  id:           number
+  value:        string
+  entropy:      number
+  pepperActive: boolean | null   // null = not applicable (client-side modes)
+  copied:       boolean
+  push:         PushInfo
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const DURATION_LABELS: Record<ExpireDuration, string> = { 6: '1 Day', 12: '1 Week', 15: '1 Month' }
+const APP_VERSION_FALLBACK = '1.5.0'
 
-const DEFAULT_PASSWORD_CONFIG: GeneratorConfig = {
+const MODE_OPTIONS = [
+  { value: 'smartpass',  label: 'SmartPass' },
+  { value: 'password',   label: 'Random' },
+  { value: 'passphrase', label: 'Passphrase' },
+] as const
+
+const QTY_OPTIONS    = [1, 3, 5].map(q => ({ value: q as Quantity, label: q }))
+const DIGIT_OPTIONS  = [2, 3, 4].map(d => ({ value: d as DigitCount, label: `${d} digits` }))
+const EXPIRY_OPTIONS = [
+  { value: 6  as ExpireDuration, label: '1 day' },
+  { value: 12 as ExpireDuration, label: '1 week' },
+  { value: 15 as ExpireDuration, label: '1 month' },
+]
+const SEPARATOR_OPTIONS = [
+  { value: '-', label: <span className="font-mono">-</span> },
+  { value: '.', label: <span className="font-mono">.</span> },
+  { value: ' ', label: 'Space' },
+]
+const LENGTH_PRESETS = [16, 24, 32, 64]
+
+const DEFAULT_CONFIG: GeneratorConfig = {
   mode: 'password', length: 24,
   useSpecialChars: true, useNumbers: true, useUppercase: true, excludeAmbiguous: false,
   wordCount: 4, separator: '-',
 }
 
-const DEFAULT_SMARTPASS_OPTS: SmartPassOptions = { digitCount: 2, symbolSet: 'safe' }
+const LEVEL_TEXT: Record<StrengthLevel, string> = { strong: 'text-strong', fair: 'text-fair', weak: 'text-weak' }
+const LEVEL_BAR:  Record<StrengthLevel, string> = { strong: 'bg-strong',   fair: 'bg-fair',   weak: 'bg-weak' }
 
-function makeEntry(value: string, entropy: number, pepper_active = false): UIEntry {
-  return { value, entropy, pepper_active, copied: false, pushState: 'idle', pushUrl: '', expiresAt: null, viewsRemaining: null, retryAfter: null }
-}
+const THEME_ICON:  Record<ThemePreference, typeof Sun>  = { system: Monitor, light: Sun, dark: Moon }
+const THEME_LABEL: Record<ThemePreference, string>      = { system: 'Theme: system', light: 'Theme: light', dark: 'Theme: dark' }
 
-const MODE_LABELS: Record<AppMode, string> = {
-  smartpass:  'SmartPass ✦',
-  password:   'Random',
-  passphrase: 'Passphrase',
+const IDLE_PUSH: PushInfo = { state: 'idle', url: '', expiresAt: null, viewsRemaining: null, retryAfter: null }
+
+const clampViews = (raw: string) => Math.max(1, Math.min(100, parseInt(raw, 10) || 1))
+
+function isTypingTarget(el: EventTarget | null) {
+  if (!(el instanceof HTMLElement)) return false
+  return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [appMode,       setAppMode]       = useState<AppMode>('smartpass')
-  const [smartpassOpts, setSmartpassOpts] = useState<SmartPassOptions>(DEFAULT_SMARTPASS_OPTS)
-  const [config,        setConfig]        = useState<GeneratorConfig>(DEFAULT_PASSWORD_CONFIG)
-  const [quantity,      setQuantity]      = useState<1 | 3 | 5>(3)
-  const [pushDuration,  setPushDuration]  = useState<ExpireDuration>(6)
-  const [pushViews,     setPushViews]     = useState(5)
-  const [entries,       setEntries]       = useState<UIEntry[]>([])
-  const [generating,    setGenerating]    = useState(false)
-  const [health,        setHealth]        = useState<{ status: string; version: string } | null>(null)
-  const [toast,         setToast]         = useState('')
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const { theme, cycleTheme } = useTheme()
 
-  const updateConfig = (u: Partial<GeneratorConfig>) => setConfig(p => ({ ...p, ...u }))
-  const updateEntry  = (i: number, u: Partial<UIEntry>) =>
-    setEntries(p => p.map((e, idx) => idx === i ? { ...e, ...u } : e))
+  const [mode,       setMode]       = useState<AppMode>('smartpass')
+  const [digits,     setDigits]     = useState<DigitCount>(2)
+  const [symbols,    setSymbols]    = useState<SymbolSet>('safe')
+  const [config,     setConfig]     = useState<GeneratorConfig>(DEFAULT_CONFIG)
+  const [quantity,   setQuantity]   = useState<Quantity>(3)
+  const [expiry,     setExpiry]     = useState<ExpireDuration>(6)
+  const [viewsInput, setViewsInput] = useState('5')
+  const [entries,    setEntries]    = useState<Entry[]>([])
+  const [generating, setGenerating] = useState(false)
+  const [genError,   setGenError]   = useState('')
+  const [health,     setHealth]     = useState<Health | null>(null)
+  const [snack,      setSnack]      = useState('')
 
-  const showToast = (msg: string) => {
-    if (toastTimer.current) clearTimeout(toastTimer.current)
-    setToast(msg)
-    toastTimer.current = setTimeout(() => setToast(''), 2000)
-  }
+  const nextId     = useRef(0)
+  const requestSeq = useRef(0)   // bumps on every full generate; stale async results are dropped
+  const snackTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // ─── Generate ───────────────────────────────────────────────────────────────
-
-  // Accepts optional overrides so mode-switch clicks can generate immediately
-  // without waiting for React to flush state.
-  // SmartPass is async (API call); Random/Passphrase remain synchronous.
-  const generateWithMode = useCallback(async (
-    overrideMode?: AppMode,
-    overrideQty?: 1 | 3 | 5,
-  ) => {
-    const mode = overrideMode ?? appMode
-    const qty  = overrideQty  ?? quantity
-
-    if (mode === 'smartpass') {
-      setGenerating(true)
-      try {
-        const res = await fetch('/api/generate/smartpass', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ digitCount: smartpassOpts.digitCount, symbolSet: smartpassOpts.symbolSet, count: qty }),
-        })
-        if (res.status === 429) { showToast('Too many requests — try again shortly'); return }
-        if (!res.ok)            { showToast('Generation failed — please try again');  return }
-        const data = await res.json()
-        setEntries(data.passwords.map((v: string) => makeEntry(v, data.entropy_bits, data.pepper_active)))
-      } catch {
-        showToast('Generation failed — please try again')
-      } finally {
-        setGenerating(false)
-      }
-    } else {
-      const cfg   = { ...config, mode: mode as 'password' | 'passphrase' }
-      const batch = PasswordEngine.generateBatch(cfg, qty)
-      setEntries(batch.map(p => makeEntry(p.value, p.entropy)))
-    }
-  }, [appMode, quantity, smartpassOpts, config])
-
-  useEffect(() => {
-    generateWithMode()
-    fetch('/api/health')
-      .then(r => r.json())
-      .then(d => setHealth(d))
-      .catch(() => setHealth({ status: 'offline', version: '0.0.0' }))
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const showSnack = useCallback((msg: string) => {
+    if (snackTimer.current) clearTimeout(snackTimer.current)
+    setSnack(msg)
+    snackTimer.current = setTimeout(() => setSnack(''), 2500)
   }, [])
 
-  const switchMode = (m: AppMode) => {
-    setAppMode(m)
-    generateWithMode(m)
-  }
+  const makeEntry = (value: string, entropy: number, pepperActive: boolean | null): Entry =>
+    ({ id: nextId.current++, value, entropy, pepperActive, copied: false, push: IDLE_PUSH })
 
-  // ─── Per-card regenerate ────────────────────────────────────────────────────
+  const updateEntry = (id: number, patch: Partial<Entry>) =>
+    setEntries(list => list.map(e => (e.id === id ? { ...e, ...patch } : e)))
 
-  const regenerateOne = async (index: number) => {
-    if (appMode === 'smartpass') {
-      try {
-        const res = await fetch('/api/generate/smartpass', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ digitCount: smartpassOpts.digitCount, symbolSet: smartpassOpts.symbolSet, count: 1 }),
-        })
-        if (!res.ok) return
-        const data = await res.json()
-        updateEntry(index, makeEntry(data.passwords[0], data.entropy_bits, data.pepper_active))
-      } catch { /* silent — card stays unchanged */ }
-    } else {
-      const cfg            = { ...config, mode: appMode as 'password' | 'passphrase' }
-      const { value, entropy } = PasswordEngine.generate(cfg)
-      updateEntry(index, makeEntry(value, entropy))
+  const updateConfig = (patch: Partial<GeneratorConfig>) => setConfig(c => ({ ...c, ...patch }))
+
+  // ─── Generate ───────────────────────────────────────────────────────────────
+  // Re-runs automatically whenever the mode or any option changes, so the list
+  // always reflects what's on screen — no "remember to press Generate" step.
+
+  const generate = useCallback(async () => {
+    const seq = ++requestSeq.current
+    setGenError('')
+
+    if (mode !== 'smartpass') {
+      setGenerating(false)
+      const batch = PasswordEngine.generateBatch({ ...config, mode }, quantity)
+      setEntries(batch.map(p => makeEntry(p.value, p.entropy, null)))
+      return
+    }
+
+    setGenerating(true)
+    try {
+      const data = await generateSmartPass(digits, symbols, quantity)
+      if (seq !== requestSeq.current) return
+      setEntries(data.passwords.map(v => makeEntry(v, data.entropy_bits, data.pepper_active)))
+    } catch (err) {
+      if (seq !== requestSeq.current) return
+      const msg = err instanceof ApiError ? err.message : 'Generation failed — please try again'
+      setGenError(msg)
+      showSnack(msg)
+    } finally {
+      if (seq === requestSeq.current) setGenerating(false)
+    }
+  }, [mode, config, quantity, digits, symbols, showSnack])
+
+  useEffect(() => { generate() }, [generate])
+
+  useEffect(() => {
+    fetchHealth().then(setHealth).catch(() => setHealth({ status: 'offline', version: APP_VERSION_FALLBACK }))
+  }, [])
+
+  const regenerateOne = async (id: number) => {
+    const seq = requestSeq.current
+    if (mode !== 'smartpass') {
+      const { value, entropy } = PasswordEngine.generate({ ...config, mode })
+      updateEntry(id, { value, entropy, copied: false, push: IDLE_PUSH })
+      return
+    }
+    try {
+      const data = await generateSmartPass(digits, symbols, 1)
+      if (seq !== requestSeq.current) return   // list was replaced meanwhile
+      updateEntry(id, {
+        value: data.passwords[0], entropy: data.entropy_bits, pepperActive: data.pepper_active,
+        copied: false, push: IDLE_PUSH,
+      })
+    } catch (err) {
+      showSnack(err instanceof ApiError ? err.message : 'Regeneration failed')
     }
   }
 
   // ─── Copy ───────────────────────────────────────────────────────────────────
 
-  const copy = (index: number) => {
-    navigator.clipboard.writeText(entries[index].value).catch(err =>
-      console.error('Clipboard write failed:', err))
-    updateEntry(index, { copied: true })
-    showToast('Copied!')
-    setTimeout(() => updateEntry(index, { copied: false }), 2000)
-  }
-
-  const copyPushUrl = (url: string) => {
-    navigator.clipboard.writeText(url).catch(err =>
-      console.error('Clipboard write failed:', err))
-    showToast('Link copied!')
-  }
-
-  // ─── PwdPush ────────────────────────────────────────────────────────────────
-
-  const push = async (index: number) => {
-    if (entries[index].pushState === 'loading') return
-    updateEntry(index, { pushState: 'loading', pushUrl: '', expiresAt: null, viewsRemaining: null, retryAfter: null })
-
+  const writeClipboard = async (text: string, okMsg: string) => {
     try {
-      const res  = await fetch('/api/pwdpush/push', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payload: entries[index].value, ttl: pushDuration, maxViews: pushViews, deletable: true }),
-      })
-      const data = await res.json()
-
-      if (res.status === 429) {
-        updateEntry(index, { pushState: 'error', retryAfter: data.retryAfter ?? 60 })
-        setTimeout(() => updateEntry(index, { pushState: 'idle', retryAfter: null }), 5000)
-        return
-      }
-      if (!res.ok) throw new Error(data.error || 'Push failed')
-
-      updateEntry(index, { pushState: 'done', pushUrl: data.pushUrl, expiresAt: data.expiresAt, viewsRemaining: data.viewsRemaining })
-    } catch (err) {
-      console.error('PwdPush share failed:', err)
-      updateEntry(index, { pushState: 'error' })
-      setTimeout(() => updateEntry(index, { pushState: 'idle' }), 4000)
+      await navigator.clipboard.writeText(text)
+      showSnack(okMsg)
+      return true
+    } catch {
+      showSnack('Copy failed — select the text and copy it manually')
+      return false
     }
   }
 
+  const copyEntry = async (entry: Entry) => {
+    if (!(await writeClipboard(entry.value, 'Password copied'))) return
+    updateEntry(entry.id, { copied: true })
+    setTimeout(() => updateEntry(entry.id, { copied: false }), 2000)
+  }
+
+  const copyAll = () => writeClipboard(entries.map(e => e.value).join('\n'), `${entries.length} passwords copied`)
+
+  // ─── PwdPush ────────────────────────────────────────────────────────────────
+
+  const share = async (entry: Entry) => {
+    if (entry.push.state === 'loading') return
+    updateEntry(entry.id, { push: { ...IDLE_PUSH, state: 'loading' } })
+    try {
+      const res = await pushToPwdPush(entry.value, expiry, clampViews(viewsInput))
+      updateEntry(entry.id, {
+        push: { state: 'done', url: res.pushUrl, expiresAt: res.expiresAt, viewsRemaining: res.viewsRemaining, retryAfter: null },
+      })
+    } catch (err) {
+      const retryAfter = err instanceof ApiError ? err.retryAfter : null
+      updateEntry(entry.id, { push: { ...IDLE_PUSH, state: 'error', retryAfter } })
+      showSnack(err instanceof ApiError ? err.message : 'PwdPush failed')
+      // Clear the error badge later — but only if the user hasn't retried meanwhile.
+      setTimeout(() => setEntries(list => list.map(e =>
+        e.id === entry.id && e.push.state === 'error' ? { ...e, push: IDLE_PUSH } : e)), retryAfter ? 5000 : 4000)
+    }
+  }
+
+  // ─── Keyboard shortcuts ─────────────────────────────────────────────────────
+  // G = generate, 1–5 = copy that row. Ignored while typing in a field.
+
+  const shortcuts = useRef({ generate, copyAt: (_i: number) => {} })
+  shortcuts.current = { generate, copyAt: (i: number) => { if (entries[i]) copyEntry(entries[i]) } }
+
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
+      if (isTypingTarget(e.target)) return
+      if (e.key === 'g' || e.key === 'G') { e.preventDefault(); shortcuts.current.generate() }
+      else if (/^[1-5]$/.test(e.key))       { e.preventDefault(); shortcuts.current.copyAt(Number(e.key) - 1) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // ─── Render ─────────────────────────────────────────────────────────────────
 
+  const ThemeIcon = THEME_ICON[theme]
+  const online    = health?.status === 'ok'
+
   return (
-    <div className="min-h-screen flex flex-col items-center justify-start p-6 pt-12">
+    <div className="min-h-screen">
 
-      {toast && (
-        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-surface border border-white/10 text-white text-sm font-bold px-5 py-2.5 rounded-xl shadow-2xl">
-          {toast}
+      {/* Top app bar */}
+      <header className="border-b border-outline-variant bg-surface">
+        <div className="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4">
+          <KeyRound className="h-6 w-6 text-primary" aria-hidden="true" />
+          <h1 className="text-xl font-medium">KeyChaos</h1>
+          <span className="ml-auto flex items-center gap-2 text-xs text-on-surface-variant">
+            <span aria-hidden="true" className={cx('h-2 w-2 rounded-full', online ? 'bg-strong' : 'bg-weak')} />
+            {health ? (online ? 'Online' : 'Offline') : 'Connecting…'} · v{health?.version ?? APP_VERSION_FALLBACK}
+          </span>
+          <IconButton label={THEME_LABEL[theme]} onClick={cycleTheme}>
+            <ThemeIcon className="h-5 w-5" />
+          </IconButton>
         </div>
-      )}
+      </header>
 
-      <div className="w-full max-w-2xl space-y-4">
+      <main className="mx-auto grid max-w-6xl gap-4 px-4 py-4 lg:grid-cols-[380px_minmax(0,1fr)] lg:items-start">
 
-        {/* Header */}
-        <header className="text-center mb-8">
-          <div className="flex justify-center mb-4">
-            <div className="p-3 bg-primary/10 rounded-2xl">
-              <Shield className="w-8 h-8 text-primary" />
-            </div>
-          </div>
-          <h1 className="text-4xl font-black tracking-tight mb-1">
-            Key<span className="text-primary">Chaos</span>
-          </h1>
-          <p className="text-secondary text-xs font-bold tracking-widest uppercase">
-            Professional Generator · v{health?.version || '1.4.0'}
-          </p>
-        </header>
+        {/* ─── Controls ─────────────────────────────────────────────────────── */}
+        <section aria-label="Generator options"
+          className="space-y-5 rounded-2xl bg-surface-container p-5 lg:sticky lg:top-4">
 
-        {/* Config Card */}
-        <div className="bg-surface border border-white/10 rounded-2xl p-6 space-y-5">
+          <Segmented label="Mode" value={mode} options={MODE_OPTIONS} onChange={setMode} />
 
-          {/* Mode Tabs */}
-          <div className="flex gap-2">
-            {(['smartpass', 'password', 'passphrase'] as AppMode[]).map(m => (
-              <button
-                key={m}
-                onClick={() => switchMode(m)}
-                className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all ${
-                  appMode === m
-                    ? 'bg-primary text-white shadow-lg shadow-primary/20'
-                    : 'bg-white/5 text-secondary hover:bg-white/10'
-                }`}
-              >
-                {MODE_LABELS[m]}
-              </button>
-            ))}
-          </div>
-
-          {/* SmartPass Controls */}
-          {appMode === 'smartpass' && (
+          {mode === 'smartpass' && (
             <div className="space-y-4">
-              <div className="flex items-start gap-2">
-                <p className="text-xs text-secondary leading-relaxed flex-1">
-                  Memorable format: <span className="font-mono text-white/70">Adjective + Noun + Symbol + Digits</span>
-                  <br />Example: <span className="font-mono text-primary">BoldFalcon#47</span>
-                </p>
-                <div
-                  className="group relative shrink-0 cursor-help"
-                  title="Suitable for shared/temporary credentials via PwdPush. For master passwords, use Random mode with length 24+."
-                >
-                  <Info className="w-4 h-4 text-secondary/50 hover:text-secondary transition-colors" />
-                </div>
+              <p className="text-sm text-on-surface-variant">
+                Adjective + Noun + Symbol + Digits, e.g. <span className="font-mono text-on-surface">BoldFalcon#47</span>.
+                Easy to read out over the phone — best for temporary or shared credentials.
+                For long-lived admin accounts use Random at 24+ characters.
+              </p>
+              <div>
+                <FieldLabel>Digits</FieldLabel>
+                <Segmented label="Digits" value={digits} options={DIGIT_OPTIONS} onChange={setDigits} />
               </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <span className="text-[10px] font-bold text-secondary/60 uppercase tracking-widest block mb-2">Digits</span>
-                  <div className="flex gap-1.5">
-                    {([2, 3, 4] as const).map(d => (
-                      <button
-                        key={d}
-                        onClick={() => setSmartpassOpts(o => ({ ...o, digitCount: d }))}
-                        className={`flex-1 py-2 rounded-lg text-sm font-black transition-all ${
-                          smartpassOpts.digitCount === d
-                            ? 'bg-primary text-white'
-                            : 'bg-white/5 text-secondary hover:bg-white/10'
-                        }`}
-                      >
-                        {d}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <span className="text-[10px] font-bold text-secondary/60 uppercase tracking-widest block mb-2">Symbol</span>
-                  <div className="flex gap-1.5">
-                    {(['safe', 'none'] as const).map(s => (
-                      <button
-                        key={s}
-                        onClick={() => setSmartpassOpts(o => ({ ...o, symbolSet: s }))}
-                        className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${
-                          smartpassOpts.symbolSet === s
-                            ? 'bg-primary text-white'
-                            : 'bg-white/5 text-secondary hover:bg-white/10'
-                        }`}
-                      >
-                        {s === 'safe' ? 'On' : 'Off'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              <SwitchRow label="Include symbol" hint="# @ ! * + = -"
+                checked={symbols === 'safe'} onChange={on => setSymbols(on ? 'safe' : 'none')} />
             </div>
           )}
 
-          {/* Random (Password) Controls */}
-          {appMode === 'password' && (
+          {mode === 'password' && (
             <div className="space-y-4">
               <div>
-                <div className="flex justify-between mb-2">
-                  <span className="text-xs font-bold text-secondary uppercase tracking-widest">Length</span>
-                  <span className="text-xs font-black text-white tabular-nums">{config.length}</span>
-                </div>
-                <input
-                  type="range" min={8} max={128} value={config.length}
-                  onChange={e => updateConfig({ length: parseInt(e.target.value) })}
-                  className="w-full accent-primary"
-                />
-                <div className="flex justify-between mt-1">
-                  <span className="text-[10px] text-white/20">8</span>
-                  <span className="text-[10px] text-white/20">128</span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                {([
-                  ['useSpecialChars',  'Special chars'],
-                  ['useNumbers',       'Numbers'],
-                  ['useUppercase',     'Uppercase'],
-                  ['excludeAmbiguous', 'Exclude ambiguous (0O1lI|)'],
-                ] as [keyof GeneratorConfig, string][]).map(([key, label]) => (
-                  <button
-                    key={key}
-                    onClick={() => updateConfig({ [key]: !config[key] })}
-                    className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-all text-left"
-                  >
-                    {config[key]
-                      ? <ToggleRight className="w-4 h-4 text-primary shrink-0" />
-                      : <ToggleLeft  className="w-4 h-4 text-secondary shrink-0" />
-                    }
-                    <span className="text-xs font-medium text-secondary leading-tight">{label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Passphrase Controls */}
-          {appMode === 'passphrase' && (
-            <div className="space-y-4">
-              <div>
-                <div className="flex justify-between mb-2">
-                  <span className="text-xs font-bold text-secondary uppercase tracking-widest">Word count</span>
-                  <span className="text-xs font-black text-white tabular-nums">{config.wordCount}</span>
-                </div>
-                <input
-                  type="range" min={3} max={8} value={config.wordCount}
-                  onChange={e => updateConfig({ wordCount: parseInt(e.target.value) })}
-                  className="w-full accent-primary"
-                />
-                <div className="flex justify-between mt-1">
-                  <span className="text-[10px] text-white/20">3</span>
-                  <span className="text-[10px] text-white/20">8</span>
-                </div>
-              </div>
-
-              <div>
-                <span className="text-xs font-bold text-secondary uppercase tracking-widest block mb-2">Separator</span>
-                <div className="flex gap-2">
-                  {(['-', ' ', '.'] as const).map(sep => (
-                    <button
-                      key={sep}
-                      onClick={() => updateConfig({ separator: sep })}
-                      className={`flex-1 py-2 rounded-xl text-sm font-mono font-bold transition-all ${
-                        config.separator === sep
-                          ? 'bg-primary text-white'
-                          : 'bg-white/5 text-secondary hover:bg-white/10'
-                      }`}
-                    >
-                      {sep === ' ' ? '␣ space' : sep}
+                <FieldLabel htmlFor="length"
+                  trailing={<span className="font-mono text-sm tabular-nums">{config.length}</span>}>
+                  Length
+                </FieldLabel>
+                <input id="length" type="range" min={8} max={128} value={config.length}
+                  onChange={e => updateConfig({ length: Number(e.target.value) })} className="w-full" />
+                <div className="mt-2 flex gap-2" role="group" aria-label="Length presets">
+                  {LENGTH_PRESETS.map(n => (
+                    <button key={n} type="button" onClick={() => updateConfig({ length: n })}
+                      aria-pressed={config.length === n}
+                      className={cx(
+                        'h-8 flex-1 rounded-lg border text-xs font-medium transition-colors',
+                        config.length === n
+                          ? 'border-transparent bg-secondary-container text-on-secondary-container'
+                          : 'border-outline text-on-surface-variant hover:bg-on-surface/8',
+                      )}>
+                      {n}
                     </button>
                   ))}
                 </div>
               </div>
+              <div className="-mx-3">
+                <SwitchRow label="Uppercase"   checked={config.useUppercase}    onChange={v => updateConfig({ useUppercase: v })} />
+                <SwitchRow label="Numbers"     checked={config.useNumbers}      onChange={v => updateConfig({ useNumbers: v })} />
+                <SwitchRow label="Symbols"     checked={config.useSpecialChars} onChange={v => updateConfig({ useSpecialChars: v })} />
+                <SwitchRow label="Exclude look-alikes" hint="0 O 1 l I |"
+                  checked={config.excludeAmbiguous} onChange={v => updateConfig({ excludeAmbiguous: v })} />
+              </div>
             </div>
           )}
 
-          {/* Quantity + Generate */}
-          <div className="flex items-center gap-3 pt-1">
-            <span className="text-xs font-bold text-secondary uppercase tracking-widest shrink-0">Qty</span>
-            <div className="flex gap-2">
-              {([1, 3, 5] as const).map(q => (
-                <button
-                  key={q}
-                  onClick={() => {
-                    setQuantity(q)
-                    generateWithMode(undefined, q)
-                  }}
-                  className={`w-10 h-9 rounded-lg text-sm font-black transition-all ${
-                    quantity === q
-                      ? 'bg-primary text-white'
-                      : 'bg-white/5 text-secondary hover:bg-white/10'
-                  }`}
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
-            <button
-              onClick={() => generateWithMode()}
-              disabled={generating}
-              className="flex-1 flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-white font-bold py-2.5 rounded-xl shadow-lg shadow-primary/20 transition-all active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              <RefreshCw className={`w-4 h-4 ${generating ? 'animate-spin' : ''}`} />
-              {generating ? 'Generating…' : 'Generate'}
-            </button>
-          </div>
-        </div>
-
-        {/* PwdPush Settings */}
-        <div className="bg-surface border border-white/10 rounded-2xl px-5 py-4">
-          <span className="text-xs font-bold text-secondary uppercase tracking-widest block mb-3">PwdPush defaults</span>
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <label className="text-[10px] text-white/30 font-bold uppercase tracking-widest block mb-1">Expiry</label>
-              <div className="relative">
-                <select
-                  value={pushDuration}
-                  onChange={e => setPushDuration(parseInt(e.target.value) as ExpireDuration)}
-                  className="w-full appearance-none bg-white/5 border border-white/10 text-white text-sm font-bold rounded-lg px-3 py-2 pr-8 focus:outline-none focus:border-primary/50"
-                >
-                  {(Object.entries(DURATION_LABELS) as [string, string][]).map(([v, label]) => (
-                    <option key={v} value={v} className="bg-gray-900">{label}</option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-secondary pointer-events-none" />
+          {mode === 'passphrase' && (
+            <div className="space-y-4">
+              <div>
+                <FieldLabel htmlFor="words"
+                  trailing={<span className="font-mono text-sm tabular-nums">{config.wordCount}</span>}>
+                  Words
+                </FieldLabel>
+                <input id="words" type="range" min={3} max={8} value={config.wordCount}
+                  onChange={e => updateConfig({ wordCount: Number(e.target.value) })} className="w-full" />
+              </div>
+              <div>
+                <FieldLabel>Separator</FieldLabel>
+                <Segmented label="Separator" value={config.separator} options={SEPARATOR_OPTIONS}
+                  onChange={v => updateConfig({ separator: v })} />
               </div>
             </div>
-            <div className="flex-1">
-              <label className="text-[10px] text-white/30 font-bold uppercase tracking-widest block mb-1">Max views</label>
-              <input
-                type="number" min={1} max={100} value={pushViews}
-                onChange={e => setPushViews(Math.max(1, Math.min(100, parseInt(e.target.value) || 1)))}
-                className="w-full bg-white/5 border border-white/10 text-white text-sm font-bold rounded-lg px-3 py-2 focus:outline-none focus:border-primary/50"
-              />
-            </div>
-          </div>
-        </div>
+          )}
 
-        {/* Password List */}
-        {entries.length > 0 && (
+          <div>
+            <FieldLabel>How many</FieldLabel>
+            <Segmented label="How many" value={quantity} options={QTY_OPTIONS} onChange={setQuantity} />
+          </div>
+
+          <Button className="w-full" onClick={generate} disabled={generating}
+            icon={<RefreshCw className={cx('h-4 w-4', generating && 'animate-spin')} aria-hidden="true" />}>
+            {generating ? 'Generating…' : 'Generate'}
+            <kbd className="ml-1 rounded border border-on-primary/40 px-1.5 font-sans text-[11px] leading-4 opacity-80">G</kbd>
+          </Button>
+
+          <hr className="border-outline-variant" />
+
           <div className="space-y-3">
-            {entries.map((entry, i) => {
-              const { label, color, barColor } = PasswordEngine.getStrengthLabel(entry.entropy)
-              const isSmartPass = appMode === 'smartpass'
-              return (
-                <div key={i} className="bg-surface border border-white/10 rounded-2xl p-5 space-y-3">
+            <h2 className="text-sm font-medium">PwdPush link</h2>
+            <div>
+              <FieldLabel>Expires after</FieldLabel>
+              <Segmented label="Link expires after" value={expiry} options={EXPIRY_OPTIONS} onChange={setExpiry} />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <label htmlFor="views" className="text-xs font-medium text-on-surface-variant">Max views (1–100)</label>
+              <input id="views" type="number" inputMode="numeric" min={1} max={100} value={viewsInput}
+                onChange={e => setViewsInput(e.target.value)}
+                onBlur={() => setViewsInput(String(clampViews(viewsInput)))}
+                className="h-10 w-24 rounded-lg border border-outline bg-surface px-3 text-sm tabular-nums focus:border-primary focus:outline-none" />
+            </div>
+          </div>
+        </section>
 
-                  {/* Password value + per-card regenerate */}
-                  <div className="flex items-start gap-3">
-                    <div className="font-mono text-lg font-bold text-white break-all leading-relaxed flex-1">
-                      {entry.value}
-                    </div>
-                    <button
-                      onClick={() => regenerateOne(i)}
-                      className="shrink-0 mt-0.5 text-secondary hover:text-white transition-colors"
-                      title="Regenerate this one"
-                    >
-                      <RefreshCw className="w-4 h-4" />
-                    </button>
-                  </div>
+        {/* ─── Results ──────────────────────────────────────────────────────── */}
+        <section aria-label="Generated passwords" className="space-y-3">
+          <div className="flex min-h-10 items-center gap-2">
+            <h2 className="text-sm font-medium">Results</h2>
+            <span className="hidden text-xs text-on-surface-variant sm:inline">
+              Click a password or press 1–{entries.length || quantity} to copy
+            </span>
+            {entries.length > 1 && (
+              <Button variant="text" className="ml-auto" onClick={copyAll}
+                icon={<CopyCheck className="h-4 w-4" aria-hidden="true" />}>
+                Copy all
+              </Button>
+            )}
+          </div>
 
-                  {/* Entropy + strength */}
-                  <div className="flex items-center gap-3">
-                    <div className="h-1.5 flex-1 bg-white/5 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-700 ${barColor}`}
-                        style={{ width: `${Math.min(100, (entry.entropy / 100) * 100)}%` }}
-                      />
-                    </div>
-                    <span className={`text-xs font-black uppercase tracking-widest shrink-0 ${color}`}>
-                      {label}
-                    </span>
-                    {isSmartPass ? (
-                      <>
-                        <span
-                          className={`text-xs font-bold tabular-nums shrink-0 ${entry.pepper_active ? 'text-success' : 'text-warning'}`}
-                          title={!entry.pepper_active ? 'Set SMARTPASS_PEPPER in your .env for additional security' : undefined}
-                        >
-                          {entry.pepper_active ? '✦' : '⚠'} {entry.entropy} bits
-                        </span>
-                        <span
-                          className={`text-[10px] font-medium shrink-0 ${entry.pepper_active ? 'text-success/60' : 'text-warning/60'}`}
-                          title={!entry.pepper_active ? 'Set SMARTPASS_PEPPER in your .env for additional security' : undefined}
-                        >
-                          ({entry.pepper_active ? 'pepper active' : 'no pepper'})
-                        </span>
-                      </>
-                    ) : (
-                      <span className="text-xs text-secondary font-bold tabular-nums shrink-0">
-                        ~{entry.entropy} bits
-                      </span>
-                    )}
-                  </div>
+          {genError && entries.length === 0 && (
+            <p role="alert" className="rounded-xl bg-surface-container p-4 text-sm text-weak">{genError}</p>
+          )}
 
-                  {/* Action buttons */}
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => copy(i)}
-                      className="flex-1 flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-2.5 rounded-xl transition-all active:scale-95 text-sm"
-                    >
-                      {entry.copied
-                        ? <><CheckCircle2 className="w-4 h-4 text-success" />Copied</>
-                        : <><Copy        className="w-4 h-4" />Copy</>
-                      }
-                    </button>
-                    <button
-                      onClick={() => push(i)}
-                      disabled={entry.pushState === 'loading' || entry.pushState === 'done'}
-                      className="flex-1 flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 text-success font-bold py-2.5 rounded-xl transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                    >
-                      {entry.pushState === 'loading' && <><RefreshCw className="w-4 h-4 animate-spin" />Pushing…</>}
-                      {entry.pushState === 'done'    && <><CheckCircle2 className="w-4 h-4" />Pushed</>}
-                      {entry.pushState === 'error'   && <><Share2 className="w-4 h-4 text-error" />{entry.retryAfter ? `Retry ${entry.retryAfter}s` : 'Failed'}</>}
-                      {entry.pushState === 'idle'    && <><Share2 className="w-4 h-4" />PwdPush</>}
-                    </button>
-                  </div>
+          <ol className="space-y-3" aria-busy={generating}>
+            {entries.map((entry, i) => (
+              <ResultCard key={entry.id} index={i} entry={entry}
+                onCopy={() => copyEntry(entry)}
+                onRegenerate={() => regenerateOne(entry.id)}
+                onShare={() => share(entry)}
+                onCopyLink={() => writeClipboard(entry.push.url, 'Link copied')} />
+            ))}
+          </ol>
+        </section>
+      </main>
 
-                  {/* Push result */}
-                  {entry.pushState === 'done' && entry.pushUrl && (
-                    <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5">
-                      <a href={entry.pushUrl} target="_blank" rel="noopener noreferrer"
-                        className="flex-1 text-xs font-mono text-success truncate hover:underline">
-                        {entry.pushUrl}
-                      </a>
-                      <button onClick={() => copyPushUrl(entry.pushUrl)}
-                        className="shrink-0 text-secondary hover:text-white transition-colors" title="Copy link">
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
-                  {entry.pushState === 'done' && (entry.expiresAt || entry.viewsRemaining != null) && (
-                    <p className="text-[10px] text-secondary font-medium">
-                      {entry.expiresAt && <>Expires {new Date(entry.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</>}
-                      {entry.expiresAt && entry.viewsRemaining != null && ' · '}
-                      {entry.viewsRemaining != null && <>{entry.viewsRemaining} view{entry.viewsRemaining !== 1 ? 's' : ''} remaining</>}
-                    </p>
-                  )}
-                </div>
-              )
-            })}
+      {/* Snackbar */}
+      <div role="status" aria-live="polite"
+        className="pointer-events-none fixed inset-x-0 bottom-4 flex justify-center px-4">
+        {snack && (
+          <div className="rounded-lg bg-inverse-surface px-4 py-3 text-sm text-inverse-on-surface shadow-md">
+            {snack}
           </div>
         )}
-
-        {/* Footer */}
-        <footer className="flex items-center justify-center gap-4 pt-4 pb-8">
-          <div className="flex items-center gap-1.5">
-            <div className={`w-2 h-2 rounded-full ${health?.status === 'ok' ? 'bg-success' : 'bg-error'}`} />
-            <span className="text-[10px] font-bold text-secondary uppercase tracking-widest">
-              {health?.status === 'ok' ? 'Online' : 'Offline'}
-            </span>
-          </div>
-          <span className="text-white/10">·</span>
-          <span className="text-[10px] text-white/20 font-medium">KeyChaos — MSP Excellence</span>
-        </footer>
-
       </div>
     </div>
+  )
+}
+
+// ─── Result card ──────────────────────────────────────────────────────────────
+
+interface ResultCardProps {
+  index:        number
+  entry:        Entry
+  onCopy:       () => void
+  onRegenerate: () => void
+  onShare:      () => void
+  onCopyLink:   () => void
+}
+
+function ResultCard({ index, entry, onCopy, onRegenerate, onShare, onCopyLink }: ResultCardProps) {
+  const { label, level } = PasswordEngine.getStrengthLabel(entry.entropy)
+  const { push }         = entry
+
+  return (
+    <li className="rounded-xl border border-outline-variant bg-surface p-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-1 w-4 shrink-0 text-right text-xs tabular-nums text-on-surface-variant" aria-hidden="true">
+          {index + 1}
+        </span>
+        <button type="button" onClick={onCopy} title="Click to copy"
+          aria-label={`Password ${index + 1}: ${entry.value}. Click to copy.`}
+          className="min-w-0 flex-1 rounded-md text-left font-mono text-lg font-medium break-all hover:text-primary transition-colors">
+          {entry.value}
+        </button>
+        <IconButton label="Regenerate this password" onClick={onRegenerate} className="-mr-2 -mt-2">
+          <RefreshCw className="h-4 w-4" />
+        </IconButton>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 pl-7">
+        <div className="h-1 min-w-24 flex-1 overflow-hidden rounded-full bg-surface-container-high" aria-hidden="true">
+          <div className={cx('h-full rounded-full', LEVEL_BAR[level])} style={{ width: `${Math.min(100, entry.entropy)}%` }} />
+        </div>
+        <span className={cx('text-xs font-medium', LEVEL_TEXT[level])}>{label}</span>
+        <span className="text-xs tabular-nums text-on-surface-variant">{entry.entropy} bits</span>
+        {entry.pepperActive !== null && (
+          <span
+            title={entry.pepperActive ? 'Server pepper is active' : 'Set SMARTPASS_PEPPER on the server to enable the pepper'}
+            className={cx('rounded-md px-2 py-0.5 text-[11px] font-medium',
+              entry.pepperActive ? 'bg-primary-container text-on-primary-container' : 'border border-outline text-fair')}>
+            {entry.pepperActive ? 'Pepper on' : 'No pepper'}
+          </span>
+        )}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2 pl-7">
+        <Button variant="tonal" onClick={onCopy}
+          icon={entry.copied ? <Check className="h-4 w-4" aria-hidden="true" /> : <Copy className="h-4 w-4" aria-hidden="true" />}>
+          {entry.copied ? 'Copied' : 'Copy'}
+        </Button>
+        <Button variant="outlined" onClick={onShare} disabled={push.state === 'loading' || push.state === 'done'}
+          icon={push.state === 'loading'
+            ? <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
+            : <Share2 className="h-4 w-4" aria-hidden="true" />}
+          className={push.state === 'error' ? 'border-weak text-weak' : undefined}>
+          {push.state === 'loading' ? 'Sharing…'
+            : push.state === 'done'  ? 'Shared'
+            : push.state === 'error' ? (push.retryAfter ? `Retry in ${push.retryAfter}s` : 'Share failed')
+            : 'Share via PwdPush'}
+        </Button>
+      </div>
+
+      {push.state === 'done' && push.url && (
+        <div className="mt-3 ml-7 rounded-lg bg-surface-container px-3 py-2">
+          <div className="flex items-center gap-2">
+            <a href={push.url} target="_blank" rel="noopener noreferrer"
+              className="min-w-0 flex-1 truncate font-mono text-xs text-primary hover:underline">
+              {push.url}
+            </a>
+            <ExternalLink className="h-3.5 w-3.5 shrink-0 text-on-surface-variant" aria-hidden="true" />
+            <IconButton label="Copy link" onClick={onCopyLink} className="h-8 w-8">
+              <Copy className="h-4 w-4" />
+            </IconButton>
+          </div>
+          {(push.expiresAt || push.viewsRemaining != null) && (
+            <p className="text-[11px] text-on-surface-variant">
+              {push.expiresAt && <>Expires {new Date(push.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</>}
+              {push.expiresAt && push.viewsRemaining != null && ' · '}
+              {push.viewsRemaining != null && <>{push.viewsRemaining} view{push.viewsRemaining !== 1 ? 's' : ''} left</>}
+            </p>
+          )}
+        </div>
+      )}
+    </li>
   )
 }

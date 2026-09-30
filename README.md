@@ -1,7 +1,7 @@
 # KeyChaos
 
 **Professional password generator for MSP helpdesk teams.**
-Self-hostable · Docker · React + Node.js · v1.4.0
+Self-hostable · Docker · React + Node.js · v1.5.0
 
 ---
 
@@ -54,10 +54,14 @@ Express (Node.js, port 3000)
 /
 ├── src/                            Frontend (React + TypeScript)
 │   ├── App.tsx                     Main UI — all three modes, PwdPush flow
+│   ├── index.css                   Design tokens (MD3 colour roles, light + dark)
+│   ├── components/ui.tsx           MD3 primitives: buttons, segmented, switch
+│   ├── hooks/useTheme.ts           System / light / dark preference
 │   ├── engine/
 │   │   ├── passwordEngine.ts       Random + Passphrase generator (client-side)
 │   │   └── engine.test.ts          Vitest suite (36 tests)
 │   └── lib/
+│       ├── api.ts                  Typed client for the backend API
 │       └── smartpass.ts            Algorithm only — used by unit tests,
 │                                   NOT imported by App.tsx (not in bundle)
 │
@@ -77,6 +81,20 @@ Express (Node.js, port 3000)
 └── .github/workflows/
     └── docker-build.yml            CI: builds linux/amd64, pushes to GHCR
 ```
+
+---
+
+## Interface
+
+Material Design 3 with a muted earth-tone palette, light and dark (follows the OS, or pick with the theme button in the top bar). Built for speed:
+
+- Everything used day to day is on one screen — no menus or dialogs.
+- Results regenerate as soon as you change any option.
+- Click a password (or press `1`–`5`) to copy it; **Copy all** copies the whole batch, one per line.
+- Press `G` to generate a fresh batch.
+- PwdPush expiry and view limit sit next to the generator; each result has its own **Share via PwdPush** button.
+
+Fonts (Roboto, Roboto Mono) are bundled locally, so the strict `default-src 'self'` CSP needs no exceptions.
 
 ---
 
@@ -130,7 +148,7 @@ TTL enum: `6` = 1 day, `12` = 1 week, `15` = 1 month. Supports PwdPush API v2 (d
 
 ### `GET /api/health`
 ```json
-{ "status": "ok", "version": "1.4.0" }
+{ "status": "ok", "version": "1.5.0" }
 ```
 
 ---
