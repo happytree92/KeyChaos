@@ -3,12 +3,12 @@
 const { log } = require('../logger');
 
 // ─── IP extraction ────────────────────────────────────────────────────────────
-// Pangolin / Traefik set X-Forwarded-For; fall back to socket address.
+// Use req.ip, which honours the app's 'trust proxy' setting (one hop when
+// TRUST_PROXY is on). Reading X-Forwarded-For directly would let any client
+// spoof its logged IP by sending the header itself.
 
 function getIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded) return forwarded.split(',')[0].trim();
-  return req.socket?.remoteAddress || 'unknown';
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 // ─── Internal health-check detection ─────────────────────────────────────────

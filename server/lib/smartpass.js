@@ -1,6 +1,6 @@
 'use strict';
 
-const { createHmac } = require('crypto');
+const { createHmac, randomBytes, randomInt } = require('crypto');
 
 // ─── Pepper ───────────────────────────────────────────────────────────────────
 // Read once at startup; never logged, never sent to the client.
@@ -27,8 +27,9 @@ const BLOCKED_PAIRS = new Set([
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// All randomness comes from the OS CSPRNG — never Math.random() for secrets.
 function randomFrom(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
+  return arr[randomInt(arr.length)];
 }
 
 function isBlockedNumber(digits) {
@@ -40,7 +41,7 @@ function isBlockedNumber(digits) {
 function generateDigits(count, maxAttempts = 50) {
   const fallback = { 2: '47', 3: '472', 4: '4721' };
   for (let i = 0; i < maxAttempts; i++) {
-    const d = Array.from({ length: count }, () => Math.floor(Math.random() * 10)).join('');
+    const d = Array.from({ length: count }, () => randomInt(10)).join('');
     if (!isBlockedNumber(d)) return d;
   }
   return fallback[count];
@@ -59,9 +60,11 @@ function generateOne(options) {
   let symbol, digits;
 
   if (PEPPER) {
-    // Derive symbol + digits deterministically from HMAC(pepper, adj+noun).
+    // Derive symbol + digits from HMAC(pepper, adj+noun+nonce). The per-call
+    // random nonce is essential: without it the suffix is a pure function of
+    // adj+noun, collapsing the output space to |ADJECTIVES|×|NOUNS| (~15 bits).
     // Password length is identical to the no-pepper case — no extra chars.
-    const hmac = createHmac('sha256', PEPPER).update(adj + noun).digest();
+    const hmac = createHmac('sha256', PEPPER).update(adj + noun).update(randomBytes(32)).digest();
     symbol = symbolSet === 'safe' ? SYMBOLS[hmac[0] % SYMBOLS.length] : '';
     // Step through HMAC bytes to avoid blocked digit strings.
     const fallback = { 2: '47', 3: '472', 4: '4721' };
@@ -91,15 +94,15 @@ function generateSmartPass(options) {
 }
 
 /**
- * Entropy per the spec formula:
- *   log2(180) + log2(180) + log2(7) [if symbol] + log2(10) * digitCount
+ * Entropy estimate:
+ *   log2(|ADJECTIVES|) + log2(|NOUNS|) + log2(7) [if symbol] + log2(10) * digitCount
  * Rounded to 1 decimal place.
  * @param {{ digitCount: 2|3|4, symbolSet: 'safe'|'none' }} options
  * @returns {number}
  */
 function calculateEntropy(options) {
-  const adjBits    = Math.log2(180);
-  const nounBits   = Math.log2(180);
+  const adjBits    = Math.log2(ADJECTIVES.length);
+  const nounBits   = Math.log2(NOUNS.length);
   const symbolBits = options.symbolSet === 'safe' ? Math.log2(SYMBOLS.length) : 0;
   const digitBits  = options.digitCount * Math.log2(10);
   return Math.round((adjBits + nounBits + symbolBits + digitBits) * 10) / 10;
@@ -131,9 +134,7 @@ const ADJECTIVES = [
   'Open',    'Pioneer', 'Proud',   'Rare',    'Real',    'Regal',   'Rising',  'Rooted',
   'Royal',   'Safe',    'Serene',  'Signal',  'Spare',   'Stark',   'Still',   'Tested',
   'Unison',  'Urban',   'Valiant', 'Vast',    'Vital',   'Warm',    'Worthy',  'Zen',
-  // Additional (fill to 180)
-  'Amber',   'Brisk',   'Bright',  'Crisp',   'Swift',   'Bold',    'Clear',   'Clean',
-  'Sharp',   'Keen',    'True',    'Pure',    'Firm',    'Calm',    'Deep',    'Grand',
+  // Additional
   'Aerial',  'Ancient',
 ];
 

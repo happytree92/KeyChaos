@@ -21,7 +21,8 @@ function createPwdPushRouter() {
   // POST /api/pwdpush/push
   router.post('/push', async (req, res) => {
     const ip = req.clientIp || req.ip;
-    let { payload, ttl, maxViews, deletable = true, name = '' } = req.body;
+    let { payload, ttl, maxViews, deletable = true } = req.body || {};
+    deletable = deletable !== false;  // only a strict boolean reaches upstream
 
     if (!payload || typeof payload !== 'string') {
       log('invalid_params', { ip, reason: 'payload missing or not a string' });
@@ -142,8 +143,8 @@ function createPwdPushRouter() {
         const response = await fetch(`${BASE_URL}/p.json`, { method: 'GET' });
         return res.json({ ok: response.status === 200, version: 'v1/legacy', status: response.status });
       }
-    } catch (err) {
-      return res.json({ ok: false, error: err.message });
+    } catch {
+      return res.json({ ok: false, error: 'PwdPush unreachable.' });
     }
   });
 
