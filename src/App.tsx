@@ -28,6 +28,7 @@ interface Entry {
   entropy:      number
   pepperActive: boolean | null   // null = not applicable (client-side modes)
   copied:       boolean
+  regenerating: boolean          // a SmartPass regenerate request is pending
   push:         PushInfo
 }
 
@@ -93,8 +94,6 @@ export default function App() {
   const requestSeq = useRef(0)   // bumps on every full generate; stale async results are dropped
   const snackTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const timers     = useRef(new Map<string, ReturnType<typeof setTimeout>>())
-  const entriesRef = useRef(entries)
-  entriesRef.current = entries
 
   const showSnack = useCallback((msg: string) => {
     if (snackTimer.current) clearTimeout(snackTimer.current)
@@ -119,7 +118,7 @@ export default function App() {
   }, [])
 
   const makeEntry = (value: string, entropy: number, pepperActive: boolean | null): Entry =>
-    ({ id: nextId.current++, value, entropy, pepperActive, copied: false, push: IDLE_PUSH })
+    ({ id: nextId.current++, value, entropy, pepperActive, copied: false, regenerating: false, push: IDLE_PUSH })
 
   const updateEntry = (id: number, patch: Partial<Entry>) =>
     setEntries(list => list.map(e => (e.id === id ? { ...e, ...patch } : e)))
@@ -171,11 +170,10 @@ export default function App() {
   //    without the user asking — the "Options changed" hint shows instead.
   useEffect(() => {
     if (generatedWith?.key === optionsKey) return
-    const linksOnScreen = entriesRef.current.some(e => e.push.state === 'loading' || e.push.state === 'done')
     const auto = generatedWith === null
-      || (!linksOnScreen && (mode !== 'smartpass' || generatedWith.mode !== 'smartpass'))
+      || (!holdsLinks && (mode !== 'smartpass' || generatedWith.mode !== 'smartpass'))
     if (auto) generate()
-  }, [optionsKey, generatedWith, mode, generate])
+  }, [optionsKey, generatedWith, mode, holdsLinks, generate])
 
   useEffect(() => {
     fetchHealth().then(setHealth).catch(() => setHealth({ status: 'offline', version: APP_VERSION_FALLBACK }))
@@ -187,16 +185,20 @@ export default function App() {
     setEntries(list => list.map(e => (e.id === oldId ? next : e)))
 
   const regenerateOne = async (entry: Entry) => {
-    if (entry.push.state === 'loading') return
+    if (entry.push.state === 'loading' || entry.regenerating) return
     if (mode !== 'smartpass') {
       const { value, entropy } = PasswordEngine.generate({ ...config, mode })
       replaceEntry(entry.id, makeEntry(value, entropy, null))
       return
     }
+    // Lock the card (Share + Regenerate) until the new value arrives, so a
+    // share can't push the outgoing password and a double-click can't send twice.
+    updateEntry(entry.id, { regenerating: true })
     try {
       const data = await generateSmartPass(digits, symbols, 1)
       replaceEntry(entry.id, makeEntry(data.passwords[0], data.entropy_bits, data.pepper_active))
     } catch (err) {
+      updateEntry(entry.id, { regenerating: false })
       showSnack(err instanceof ApiError ? err.message : 'Regeneration failed')
     }
   }
@@ -225,7 +227,7 @@ export default function App() {
   // ─── PwdPush ────────────────────────────────────────────────────────────────
 
   const share = async (entry: Entry) => {
-    if (entry.push.state === 'loading') return
+    if (entry.push.state === 'loading' || entry.regenerating) return
     updateEntry(entry.id, { push: { ...IDLE_PUSH, state: 'loading' } })
     try {
       const res = await pushToPwdPush(entry.value, expiry, clampViews(viewsInput))
@@ -396,14 +398,17 @@ export default function App() {
             )}
           </div>
 
-          {stale && (
-            <div className="flex items-center gap-3 rounded-xl bg-secondary-container py-1 pl-4 pr-1 text-sm text-on-secondary-container">
-              <span className="flex-1">
-                Options changed — press Generate to apply.{holdsLinks && ' Shared links below will be cleared.'}
-              </span>
-              <Button variant="text" onClick={generate} disabled={generating}>Generate</Button>
-            </div>
-          )}
+          {/* Live region stays mounted so screen readers announce the hint when it appears (WCAG 4.1.3). */}
+          <div role="status">
+            {stale && (
+              <div className="flex items-center gap-3 rounded-xl bg-secondary-container py-1 pl-4 pr-1 text-sm text-on-secondary-container">
+                <span className="flex-1">
+                  Options changed — press Generate to apply.{holdsLinks && ' Shared links below will be cleared.'}
+                </span>
+                <Button variant="text" onClick={generate} disabled={generating}>Generate</Button>
+              </div>
+            )}
+          </div>
 
           {genError && entries.length === 0 && (
             <p role="alert" className="rounded-xl bg-surface-container p-4 text-sm text-weak">{genError}</p>
@@ -466,8 +471,8 @@ function ResultCard({ index, entry, onCopy, onRegenerate, onShare, onCopyLink }:
           {entry.value}
         </button>
         <IconButton label={`Regenerate password ${n}`} onClick={onRegenerate}
-          disabled={push.state === 'loading'} className="-mr-2 -mt-2">
-          <RefreshCw className="h-4 w-4" />
+          disabled={push.state === 'loading' || entry.regenerating} className="-mr-2 -mt-2">
+          <RefreshCw className={cx('h-4 w-4', entry.regenerating && 'animate-spin')} />
         </IconButton>
       </div>
 
@@ -493,7 +498,7 @@ function ResultCard({ index, entry, onCopy, onRegenerate, onShare, onCopyLink }:
           {entry.copied ? 'Copied' : 'Copy'}
         </Button>
         <Button variant="outlined" onClick={onShare} aria-label={`${shareText}, password ${n}`}
-          disabled={push.state === 'loading' || push.state === 'done'}
+          disabled={push.state === 'loading' || push.state === 'done' || entry.regenerating}
           icon={push.state === 'loading'
             ? <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
             : <Share2 className="h-4 w-4" aria-hidden="true" />}

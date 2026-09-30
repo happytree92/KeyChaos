@@ -7,6 +7,8 @@ import App from './App'
 
 let smartpassCalls = 0
 let pendingPush: ((body: object) => void) | null = null
+let holdRegen   = false                                   // hold single-password SmartPass requests open
+let pendingRegen: (() => void) | null = null
 
 function jsonResponse(body: object, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -15,16 +17,20 @@ function jsonResponse(body: object, status = 200) {
 beforeEach(() => {
   smartpassCalls = 0
   pendingPush    = null
+  holdRegen      = false
+  pendingRegen   = null
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/health') return jsonResponse({ status: 'ok', version: 'test' })
     if (url === '/api/generate/smartpass') {
       const { count } = JSON.parse(String(init?.body))
-      smartpassCalls++
-      return jsonResponse({
-        passwords:     Array.from({ length: count }, (_, i) => `Word${smartpassCalls}x${i}#11`),
+      const n = ++smartpassCalls
+      const body = () => jsonResponse({
+        passwords:     Array.from({ length: count }, (_, i) => `Word${n}x${i}#11`),
         entropy_bits:  24,
         pepper_active: false,
       })
+      if (holdRegen && count === 1) return new Promise<Response>(resolve => { pendingRegen = () => resolve(body()) })
+      return body()
     }
     if (url === '/api/pwdpush/push') {
       // Held open until the test resolves it, to exercise in-flight behaviour.
@@ -61,6 +67,7 @@ describe('App — generation', () => {
     render(<App />)
     await waitFor(() => expect(cards()).toHaveLength(3))
     const callsAfterLoad = smartpassCalls
+    const regionsBefore  = screen.getAllByRole('status')   // live regions must already be mounted
 
     fireEvent.click(screen.getByRole('radio', { name: '4 digits' }))
     fireEvent.click(screen.getByRole('radio', { name: '5' }))
@@ -68,6 +75,10 @@ describe('App — generation', () => {
 
     expect(smartpassCalls).toBe(callsAfterLoad)
     expect(optionsHint()).not.toBeNull()
+    // Announced via a pre-existing live region (one inserted with its text isn't reliably read).
+    const hintRegion = screen.getAllByRole('status').find(el => /Options changed/.test(el.textContent ?? ''))
+    expect(hintRegion).toBeDefined()
+    expect(regionsBefore).toContain(hintRegion)
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Generate' })[0])
     await waitFor(() => expect(cards()).toHaveLength(5))
@@ -108,9 +119,8 @@ describe('App — PwdPush links are never lost or mismatched', () => {
     expect(regen.disabled).toBe(true)
   })
 
-  it('a regenerated card drops a late result meant for its previous value', async () => {
+  it('regenerating a shared card clears its link', async () => {
     await switchToRandom()
-    // Card 1 is shared, then regenerated after the link arrives (fresh id)…
     fireEvent.click(within(cards()[0]).getByRole('button', { name: /Share via PwdPush, password 1/ }))
     await act(async () => { pendingPush!({ pushUrl: 'https://pwpush.test/p/old', expiresAt: null, viewsRemaining: 5 }) })
     const before = valueOf(cards()[0])
@@ -119,6 +129,30 @@ describe('App — PwdPush links are never lost or mismatched', () => {
     expect(valueOf(cards()[0])).not.toBe(before)
     expect(screen.queryByText('https://pwpush.test/p/old')).toBeNull()
     expect(within(cards()[0]).getByRole('button', { name: /Share via PwdPush, password 1/ })).toBeTruthy()
+  })
+})
+
+describe('App — SmartPass regenerate locks the card', () => {
+  it('disables Share and Regenerate until the new value arrives', async () => {
+    render(<App />)
+    await waitFor(() => expect(cards()).toHaveLength(3))
+    holdRegen = true
+    const callsBefore = smartpassCalls
+    fireEvent.click(within(cards()[0]).getByRole('button', { name: 'Regenerate password 1' }))
+    await waitFor(() => expect(pendingRegen).not.toBeNull())
+
+    const card  = cards()[0]
+    const share = within(card).getByRole('button', { name: /Share via PwdPush, password 1/ }) as HTMLButtonElement
+    const regen = within(card).getByRole('button', { name: 'Regenerate password 1' }) as HTMLButtonElement
+    expect(share.disabled).toBe(true)
+    expect(regen.disabled).toBe(true)
+    fireEvent.click(regen)                                  // double-click must not send a second request
+    expect(smartpassCalls).toBe(callsBefore + 1)
+
+    await act(async () => { pendingRegen!() })
+    const fresh = within(cards()[0]).getByRole('button', { name: /Share via PwdPush, password 1/ }) as HTMLButtonElement
+    expect(fresh.disabled).toBe(false)
+    expect(valueOf(cards()[0])).toBe(`Word${callsBefore + 1}x0#11`)
   })
 })
 
