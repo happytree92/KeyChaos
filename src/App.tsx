@@ -168,7 +168,12 @@ export default function App() {
   //    SmartPass from another mode still generates once.
   //  - A list holding a PwdPush link (or a push in flight) is never replaced
   //    without the user asking — the "Options changed" hint shows instead.
+  // Acts only on an actual options change: other deps (e.g. holdsLinks flipping
+  // when a push fails) must never trigger a regeneration on their own.
+  const lastSeenOptions = useRef<string | null>(null)
   useEffect(() => {
+    if (lastSeenOptions.current === optionsKey) return
+    lastSeenOptions.current = optionsKey
     if (generatedWith?.key === optionsKey) return
     const auto = generatedWith === null
       || (!holdsLinks && (mode !== 'smartpass' || generatedWith.mode !== 'smartpass'))

@@ -6,7 +6,7 @@ import App from './App'
 // ─── Fake backend ─────────────────────────────────────────────────────────────
 
 let smartpassCalls = 0
-let pendingPush: ((body: object) => void) | null = null
+let pendingPush: ((body: object, status?: number) => void) | null = null
 let holdRegen   = false                                   // hold single-password SmartPass requests open
 let pendingRegen: (() => void) | null = null
 
@@ -34,7 +34,7 @@ beforeEach(() => {
     }
     if (url === '/api/pwdpush/push') {
       // Held open until the test resolves it, to exercise in-flight behaviour.
-      return new Promise<Response>(resolve => { pendingPush = body => resolve(jsonResponse(body)) })
+      return new Promise<Response>(resolve => { pendingPush = (body, status) => resolve(jsonResponse(body, status)) })
     }
     throw new Error(`unexpected fetch ${url}`)
   }))
@@ -108,6 +108,36 @@ describe('App — PwdPush links are never lost or mismatched', () => {
     expect(screen.getByText('https://pwpush.test/p/one')).toBeTruthy()
     expect(valueOf(cards()[0])).toHaveLength(24)
     expect(screen.getByText(/Shared links below will be cleared/)).toBeTruthy()
+  })
+
+  it('a push failing while options are stale does not replace the list', async () => {
+    await switchToRandom()
+    const before = valueOf(cards()[0])
+    fireEvent.click(within(cards()[0]).getByRole('button', { name: /Share via PwdPush, password 1/ }))
+    fireEvent.change(screen.getByLabelText('Length'), { target: { value: '40' } })
+    await act(async () => {})
+    expect(optionsHint()).not.toBeNull()
+
+    await act(async () => { pendingPush!({ error: 'PwdPush returned 500.' }, 500) })
+
+    expect(valueOf(cards()[0])).toBe(before)
+    expect(within(cards()[0]).getByRole('button', { name: /Share failed, password 1/ })).toBeTruthy()
+    expect(optionsHint()).not.toBeNull()
+  })
+
+  it('regenerating the only shared card while options are stale changes just that card', async () => {
+    await switchToRandom()
+    const others = cards().slice(1).map(valueOf)
+    fireEvent.click(within(cards()[0]).getByRole('button', { name: /Share via PwdPush, password 1/ }))
+    await act(async () => { pendingPush!({ pushUrl: 'https://pwpush.test/p/one', expiresAt: null, viewsRemaining: 5 }) })
+    fireEvent.change(screen.getByLabelText('Length'), { target: { value: '40' } })
+    await act(async () => {})
+
+    fireEvent.click(within(cards()[0]).getByRole('button', { name: 'Regenerate password 1' }))
+    await act(async () => {})
+
+    expect(cards().slice(1).map(valueOf)).toEqual(others)
+    expect(optionsHint()).not.toBeNull()
   })
 
   it('cannot regenerate a card while its share is in flight', async () => {
