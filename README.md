@@ -1,7 +1,7 @@
 # KeyChaos
 
 **Professional password generator for MSP helpdesk teams.**
-Self-hostable · Docker · React + Node.js · v1.4.0
+Self-hostable · Docker · React + Node.js · v1.5.0
 
 ---
 
@@ -54,10 +54,15 @@ Express (Node.js, port 3000)
 /
 ├── src/                            Frontend (React + TypeScript)
 │   ├── App.tsx                     Main UI — all three modes, PwdPush flow
+│   ├── index.css                   Design tokens (MD3 colour roles, light + dark)
+│   ├── components/ui.tsx           MD3 primitives: buttons, segmented, switch
+│   ├── hooks/useTheme.ts           System / light / dark preference
 │   ├── engine/
 │   │   ├── passwordEngine.ts       Random + Passphrase generator (client-side)
 │   │   └── engine.test.ts          Vitest suite (36 tests)
+│   ├── App.test.tsx                Component tests (jsdom + Testing Library)
 │   └── lib/
+│       ├── api.ts                  Typed client for the backend API
 │       └── smartpass.ts            Algorithm only — used by unit tests,
 │                                   NOT imported by App.tsx (not in bundle)
 │
@@ -77,6 +82,20 @@ Express (Node.js, port 3000)
 └── .github/workflows/
     └── docker-build.yml            CI: builds linux/amd64, pushes to GHCR
 ```
+
+---
+
+## Interface
+
+Material Design 3 with a muted earth-tone palette, light and dark (follows the OS, or pick with the theme button in the top bar). Built for speed:
+
+- Everything used day to day is on one screen — no menus or dialogs.
+- Random and Passphrase regenerate as soon as you change an option. SmartPass waits for **Generate**, since each batch is a server request against the shared rate limit.
+- A list holding a PwdPush link is never replaced automatically — an "Options changed" hint asks first.
+- Click a password to copy it (or, with focus in the results list, press `1`–`5`); **Copy all** copies the whole batch, one per line.
+- PwdPush expiry and view limit sit next to the generator; each result has its own **Share via PwdPush** button.
+
+Fonts (Roboto, Roboto Mono) are bundled locally, so the strict `default-src 'self'` CSP needs no exceptions.
 
 ---
 
@@ -130,7 +149,7 @@ TTL enum: `6` = 1 day, `12` = 1 week, `15` = 1 month. Supports PwdPush API v2 (d
 
 ### `GET /api/health`
 ```json
-{ "status": "ok", "version": "1.4.0" }
+{ "status": "ok", "version": "1.5.0" }
 ```
 
 ---
@@ -241,7 +260,7 @@ npm run dev
 # Run the Express backend
 npm run server
 
-# Run unit tests (36 tests — PasswordEngine + SmartPass algorithm)
+# Run tests (42 — PasswordEngine, SmartPass algorithm, App components)
 npm test
 
 # Production build
