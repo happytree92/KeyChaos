@@ -8,6 +8,10 @@
 - Changes go through a pull request, never straight to `main` (merging to
   `main` builds and publishes the Docker image). A separate Claude reviewer
   session reviews each PR; address its `[blocking]` findings before merge.
+  **Follow the `review-loop` skill (`.claude/skills/review-loop/SKILL.md`)** —
+  it covers finding or creating the reviewer session, requesting reviews, and
+  handling findings. Only the repo owner merges, and changes to the review
+  process itself need the owner's explicit sign-off.
 
 ## Front-end design direction
 - **Material Design 3** principles: tonal surfaces instead of heavy shadows,
